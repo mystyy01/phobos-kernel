@@ -1,6 +1,6 @@
 /
 ├── apps/        # all executables and MT-Lang modules
-│   ├── mt-shell
+│   ├── bridge
 │   ├── mtc
 │   ├── ls
 │   └── echo
