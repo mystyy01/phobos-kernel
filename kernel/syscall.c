@@ -8,6 +8,8 @@
 #include "isr.h"
 #include "tty.h"
 #include "console.h"
+#include "drivers/framebuffer.h"
+#include "drivers/keyboard.h"
 
 extern void sched_deliver_signals(struct task *t);
 
@@ -522,6 +524,60 @@ uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
         case SYS_TCGETPGRP: {
             return tty_get_foreground_pgid();
         }
+
+        // =========================================================================
+        // Rendering syscalls
+        // =========================================================================
+
+        case SYS_FB_INFO: {
+            struct user_fb_info *out = (struct user_fb_info *)arg1;
+            if (!out) return -1;
+
+            out->width = (uint32_t)fb_width();
+            out->height = (uint32_t)fb_height();
+            out->bpp = (uint32_t)fb_bpp();
+
+            // TODO(HUMAN): Replace with real hardware pitch if you expose it.
+            out->pitch = out->width * (out->bpp / 8);
+            return 0;
+        }
+
+        case SYS_FB_PUTPIXEL: {
+            int x = (int)arg1;
+            int y = (int)arg2;
+            uint32_t colour = (uint32_t)arg3;
+
+            fb_putpixel(x, y, colour);
+
+            // TODO(HUMAN): For speed, replace this with a backbuffer+present path.
+            return 0;
+        }
+
+        case SYS_INPUT_POLL: {
+            struct user_input_event *out = (struct user_input_event *)arg1;
+            if (!out) return -1;
+
+            struct key_event ev;
+            if (!keyboard_poll_event(&ev)) {
+                return 0; // no event available
+            }
+
+            out->key = ev.key;
+            out->modifiers = ev.modifiers;
+            out->pressed = ev.pressed;
+            out->scancode = ev.scancode;
+            return 1; // event written
+        }
+
+        case SYS_TICKS: {
+            extern volatile uint64_t system_ticks;
+            return system_ticks;
+        }
+
+        // TODO(HUMAN): Add SYS_FB_PRESENT here after defining the ABI:
+        // 1) validate user buffer pointer
+        // 2) copy/convert into framebuffer
+        // 3) optionally support dirty rects
 
         default:
             return -1;

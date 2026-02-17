@@ -42,6 +42,10 @@
 #define SYS_SETPGID   26  // setpgid(int pid, int pgid) -> 0 or -1
 #define SYS_TCSETPGRP 27  // tcsetpgrp(int pgid) -> 0 or -1
 #define SYS_TCGETPGRP 28  // tcgetpgrp() -> pgid
+#define SYS_FB_INFO   29  // fb_info(struct user_fb_info *out) -> 0 or -1
+#define SYS_FB_PUTPIXEL 30 // fb_putpixel(int x, int y, uint32_t colour) -> 0
+#define SYS_INPUT_POLL 31 // input_poll(struct user_input_event *out) -> 1 event, 0 none, -1 error
+#define SYS_TICKS     32  // ticks() -> uint64_t
 
 // signal numbers
 #define SIGKILL     9
@@ -80,6 +84,29 @@ struct user_dirent {
     char name[256];        // File name
     uint32_t type;         // 0 = file, 1 = directory
 };
+
+// ============================================================================
+// GUI syscall structures (Deimos bootstrap)
+// ============================================================================
+
+struct user_fb_info {
+    uint32_t width;
+    uint32_t height;
+    uint32_t bpp;
+    uint32_t pitch;
+};
+
+struct user_input_event {
+    uint8_t key;        // ASCII or special key
+    uint8_t modifiers;  // MOD_SHIFT, MOD_CTRL, MOD_ALT
+    uint8_t pressed;    // 1 = key press, 0 = key release
+    uint8_t scancode;   // raw scan code
+};
+
+// TODO(HUMAN): Next GUI syscalls you probably want:
+// - SYS_FB_PRESENT (copy user backbuffer to framebuffer)
+// - SYS_MOUSE_POLL (once PS/2 mouse driver is in)
+// - SYS_FB_BLIT_RECT (dirty-rect present path)
 
 // Standard file descriptors
 #define STDIN_FD    0

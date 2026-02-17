@@ -512,6 +512,14 @@ int sched_spawn(const char *path, char **args, struct fd_entry *fd_overrides) {
     // Align to 16 bytes
     sp_v &= ~0xFULL;
 
+    // Keep SysV stack alignment correct for main(argc, argv).
+    // We later push: NULL + argc pointers + return address.
+    // If argc is even, add one 8-byte pad so (RSP + 8) % 16 == 0 at entry.
+    if ((argc & 1) == 0) {
+        sp_v -= 8;
+        *(uint64_t *)paging_virt_to_phys(user_pml4, sp_v) = 0;
+    }
+
     // Push NULL terminator for argv
     sp_v -= 8;
     *(uint64_t *)paging_virt_to_phys(user_pml4, sp_v) = 0;
