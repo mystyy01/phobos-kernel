@@ -52,3 +52,22 @@ int fb_bpp(void){
 uint64_t fb_base_addr(void){
     return (uint64_t)(uintptr_t)fb;
 }
+void fb_present_buffer(const void *src, uint64_t size){
+    if (!fb || !src || size == 0) return;
+    uint64_t qwords = size / 8;
+    const void *s = src;
+    void *d = (void *)fb;
+    __asm__ volatile (
+        "rep movsq"
+        : "+S"(s), "+D"(d), "+c"(qwords)
+        :
+        : "memory"
+    );
+    // Copy remaining bytes
+    uint64_t rem = size & 7;
+    if (rem) {
+        const uint8_t *sb = (const uint8_t *)s;
+        uint8_t *db = (uint8_t *)d;
+        for (uint64_t i = 0; i < rem; i++) db[i] = sb[i];
+    }
+}

@@ -574,10 +574,50 @@ uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
             return system_ticks;
         }
 
-        // TODO(HUMAN): Add SYS_FB_PRESENT here after defining the ABI:
-        // 1) validate user buffer pointer
-        // 2) copy/convert into framebuffer
-        // 3) optionally support dirty rects
+        case SYS_FB_MAP: {
+            struct task *t = sched_current();
+            if (!t) return 0;
+
+            uint64_t w = (uint64_t)fb_width();
+            uint64_t h = (uint64_t)fb_height();
+            uint64_t b = (uint64_t)fb_bpp();
+            uint64_t bytes_pp = b ? b / 8 : 4;
+            uint64_t size = w * h * bytes_pp;
+            if (size == 0) return 0;
+
+            uint64_t pages = (size + 0xFFF) / 0x1000;
+            uint64_t vaddr = 0x2000000ULL; // Fixed backbuffer base
+
+            for (uint64_t i = 0; i < pages; i++) {
+                void *page = pmm_alloc_page();
+                if (!page) return 0;
+                paging_map_user_page((uint64_t *)t->cr3,
+                                     vaddr + i * 0x1000,
+                                     (uint64_t)page,
+                                     PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+            }
+
+            // Zero through the now-mapped virtual address (safe with any CR3)
+            uint64_t *vp = (uint64_t *)vaddr;
+            uint64_t qwords = size / 8;
+            for (uint64_t i = 0; i < qwords; i++) vp[i] = 0;
+
+            return vaddr;
+        }
+
+        case SYS_FB_PRESENT: {
+            const void *src = (const void *)arg1;
+            if (!src) return -1;
+
+            uint64_t w = (uint64_t)fb_width();
+            uint64_t h = (uint64_t)fb_height();
+            uint64_t b = (uint64_t)fb_bpp();
+            uint64_t bytes_pp = b ? b / 8 : 4;
+            uint64_t size = w * h * bytes_pp;
+
+            fb_present_buffer(src, size);
+            return 0;
+        }
 
         default:
             return -1;

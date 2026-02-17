@@ -46,6 +46,8 @@
 #define SYS_FB_PUTPIXEL 30 // fb_putpixel(int x, int y, uint32_t colour) -> 0
 #define SYS_INPUT_POLL 31 // input_poll(struct user_input_event *out) -> 1 event, 0 none, -1 error
 #define SYS_TICKS     32  // ticks() -> uint64_t
+#define SYS_FB_MAP    33  // fb_map() -> vaddr of user backbuffer (or 0)
+#define SYS_FB_PRESENT 34 // fb_present(void *buf) -> 0
 
 // signal numbers
 #define SIGKILL     9

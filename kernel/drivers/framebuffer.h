@@ -9,5 +9,6 @@ int fb_width(void);
 int fb_height(void);
 int fb_bpp(void);
 uint64_t fb_base_addr(void);
+void fb_present_buffer(const void *src, uint64_t size);
 
 #endif
