@@ -49,3 +49,6 @@ int fb_height(void){
 int fb_bpp(void){
     return bpp;
 }
+uint64_t fb_base_addr(void){
+    return (uint64_t)(uintptr_t)fb;
+}

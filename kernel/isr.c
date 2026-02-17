@@ -56,6 +56,29 @@ static const char *exception_names[] = {
 };
 
 void isr_handler(uint64_t int_no) {
+    // If a user task faulted, kill it instead of halting the whole system.
+    struct task *t = sched_current();
+    if (t && t->is_user) {
+        // Print info to VGA for debugging
+        print_at("USER FAULT: ", 0, 5, 0x0C);
+        if (int_no < 32) {
+            print_at(exception_names[int_no], 12, 5, 0x0C);
+        }
+        print_at("PID: ", 0, 6, 0x0E);
+        print_hex(t->id, 5, 6);
+        if (int_no == 14) {
+            uint64_t cr2;
+            __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
+            print_at("CR2: ", 0, 7, 0x0C);
+            print_hex(cr2, 5, 7);
+        }
+
+        // Kill the task — wakes parent in sched_waitpid, scheduler continues
+        sched_exit(-1);
+        __builtin_unreachable();
+    }
+
+    // Kernel fault — display error and halt (unrecoverable)
     print_at("EXCEPTION: ", 0, 5, 0x0C);
     if (int_no < 32) {
         print_at(exception_names[int_no], 11, 5, 0x0C);
@@ -63,7 +86,6 @@ void isr_handler(uint64_t int_no) {
     print_at("INT#: ", 0, 6, 0x0C);
     print_hex(int_no, 6, 6);
 
-    // For page fault (int 14), show CR2 (faulting address)
     if (int_no == 14) {
         uint64_t cr2;
         __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
@@ -72,7 +94,6 @@ void isr_handler(uint64_t int_no) {
         print_at("(Faulting address)", 24, 7, 0x0E);
     }
 
-    // Halt on exception
     while (1) {
         __asm__ volatile ("hlt");
     }

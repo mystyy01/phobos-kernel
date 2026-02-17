@@ -6,6 +6,7 @@
 #include "isr.h"
 #include "gdt.h"
 #include "syscall.h"
+#include "drivers/framebuffer.h"
 
 #define MAX_TASKS 16
 #define MAX_PIPES 16
@@ -304,7 +305,10 @@ void sched_start(void) {
 }
 
 void sched_yield(void) {
-    (void)sched_tick(0);
+    // Halt until the next interrupt (typically the timer at ~18.2 Hz).
+    // The timer IRQ will call sched_tick() which context-switches if
+    // another task is runnable.
+    __asm__ volatile ("sti; hlt");
 }
 
 // ============================================================================
@@ -436,6 +440,23 @@ int sched_spawn(const char *path, char **args, struct fd_entry *fd_overrides) {
 
     // ELF loaded — safe to re-enable interrupts
     __asm__ volatile ("sti");
+
+    // Map the VESA framebuffer into the user's address space (supervisor-only)
+    // so that kernel syscall handlers (e.g. SYS_FB_PUTPIXEL) can access it
+    // while running with the user's CR3.
+    {
+        uint64_t fba = fb_base_addr();
+        if (fba) {
+            uint64_t bpp = (uint64_t)fb_bpp();
+            uint64_t bytes_pp = bpp ? bpp / 8 : 4;
+            uint64_t fb_size = (uint64_t)fb_width() * (uint64_t)fb_height() * bytes_pp;
+            uint64_t ms = fba & ~0xFFFULL;
+            uint64_t me = (fba + fb_size + 0xFFFULL) & ~0xFFFULL;
+            for (uint64_t a = ms; a < me; a += 0x1000) {
+                paging_map_kernel_page(user_pml4, a, a, PAGE_PRESENT | PAGE_WRITABLE);
+            }
+        }
+    }
 
     // Allocate kernel stack (identity-mapped, supervisor-only)
     int idx = task_index(t);
