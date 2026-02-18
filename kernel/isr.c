@@ -1,5 +1,6 @@
 #include "isr.h"
 #include "drivers/keyboard.h"
+#include "drivers/mouse.h"
 #include "sched.h"
 
 // System tick counter (incremented by timer IRQ ~18.2 times/sec by default PIT)
@@ -109,6 +110,11 @@ struct irq_frame *irq_handler(uint64_t int_no, struct irq_frame *frame) {
         uint8_t scancode;
         __asm__ volatile ("inb %1, %0" : "=a"(scancode) : "Nd"((uint16_t)0x60));
         keyboard_handle_scancode(scancode);
+    } else if (int_no == 44) {
+        // Mouse interrupt - read data byte and feed PS/2 packet parser.
+        uint8_t data_byte;
+        __asm__ volatile ("inb %1, %0" : "=a"(data_byte) : "Nd"((uint16_t)0x60));
+        mouse_handle_byte(data_byte);
     }
 
     // Send End of Interrupt (EOI) to PIC

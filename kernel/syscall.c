@@ -10,6 +10,7 @@
 #include "console.h"
 #include "drivers/framebuffer.h"
 #include "drivers/keyboard.h"
+#include "drivers/mouse.h"
 
 extern void sched_deliver_signals(struct task *t);
 
@@ -559,13 +560,32 @@ uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
 
             struct key_event ev;
             if (!keyboard_poll_event(&ev)) {
-                return 0; // no event available
+                struct mouse_event mev;
+                if (!mouse_poll_event(&mev)) {
+                    return 0; // no event available
+                }
+
+                out->type = (uint8_t)((mev.type == MOUSE_EVENT_BUTTON)
+                    ? INPUT_EVENT_MOUSE_BUTTON
+                    : INPUT_EVENT_MOUSE_MOVE);
+                out->key = 0;
+                out->modifiers = 0;
+                out->pressed = (uint8_t)mev.pressed;
+                out->scancode = (uint8_t)mev.button;
+                out->mouse_buttons = (uint8_t)mev.buttons;
+                out->mouse_x = (int16_t)mev.x;
+                out->mouse_y = (int16_t)mev.y;
+                return 1;
             }
 
+            out->type = INPUT_EVENT_KEYBOARD;
             out->key = ev.key;
             out->modifiers = ev.modifiers;
             out->pressed = ev.pressed;
             out->scancode = ev.scancode;
+            out->mouse_buttons = mouse_get_buttons();
+            out->mouse_x = (int16_t)mouse_get_x();
+            out->mouse_y = (int16_t)mouse_get_y();
             return 1; // event written
         }
 

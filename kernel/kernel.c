@@ -3,6 +3,7 @@
 #include "idt.h"
 #include "drivers/ata.h"
 #include "drivers/keyboard.h"
+#include "drivers/mouse.h"
 #include "drivers/framebuffer.h"
 #include "font.h"
 #include "fs/fat32.h"
@@ -88,6 +89,7 @@ void kernel_main(void) {
     // Initialize keyboard and interrupts
     keyboard_init();
     idt_init();
+    mouse_init();
 
     // Initialize syscall mechanism
     syscall_init();

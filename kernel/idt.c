@@ -42,6 +42,7 @@ extern void isr30(void);
 extern void isr31(void);
 extern void irq0(void);
 extern void irq1(void);
+extern void irq12(void);
 
 static inline void outb(uint16_t port, uint8_t val) {
     __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
@@ -75,9 +76,10 @@ static void pic_remap(void) {
     outb(0x21, 0x01);
     outb(0xA1, 0x01);
 
-    // Mask all interrupts except IRQ0 (timer) and IRQ1 (keyboard)
-    outb(0x21, 0xFC);
-    outb(0xA1, 0xFF);
+    // Unmask IRQ0/1 on master and IRQ2 cascade so slave IRQs can propagate.
+    outb(0x21, 0xF8);
+    // Unmask IRQ12 (mouse) on slave PIC.
+    outb(0xA1, 0xEF);
 }
 
 static void pit_init(void) {
@@ -128,6 +130,7 @@ void idt_init(void) {
     // Set up IRQ handlers (32+)
     idt_set_gate(32, (uint64_t)irq0);  // Timer
     idt_set_gate(33, (uint64_t)irq1);  // Keyboard
+    idt_set_gate(44, (uint64_t)irq12); // Mouse
 
     // Load IDT
     idtp.limit = sizeof(idt) - 1;

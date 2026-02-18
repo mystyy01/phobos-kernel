@@ -113,11 +113,19 @@ struct user_fb_info {
 };
 
 struct user_input_event {
+    unsigned char type;
     unsigned char key;
     unsigned char modifiers;
     unsigned char pressed;
     unsigned char scancode;
+    unsigned char mouse_buttons;
+    short mouse_x;
+    short mouse_y;
 };
+
+#define INPUT_EVENT_KEYBOARD     1
+#define INPUT_EVENT_MOUSE_MOVE   2
+#define INPUT_EVENT_MOUSE_BUTTON 3
 
 // ============================================================================
 // Syscall Wrappers

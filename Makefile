@@ -22,6 +22,7 @@ KERNEL_C_SRCS := \
 	$(KERNEL_DIR)/pmm.c \
 	$(KERNEL_DIR)/drivers/ata.c \
 	$(KERNEL_DIR)/drivers/keyboard.c \
+	$(KERNEL_DIR)/drivers/mouse.c \
 	$(KERNEL_DIR)/drivers/framebuffer.c \
 	$(KERNEL_DIR)/fs/vfs.c \
 	$(KERNEL_DIR)/fs/fat32.c \

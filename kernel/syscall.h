@@ -99,11 +99,19 @@ struct user_fb_info {
 };
 
 struct user_input_event {
+    uint8_t type;       // INPUT_EVENT_*
     uint8_t key;        // ASCII or special key
     uint8_t modifiers;  // MOD_SHIFT, MOD_CTRL, MOD_ALT
     uint8_t pressed;    // 1 = key press, 0 = key release
     uint8_t scancode;   // raw scan code
+    uint8_t mouse_buttons; // bitmask: 1 left, 2 right, 4 middle
+    int16_t mouse_x;    // absolute cursor x
+    int16_t mouse_y;    // absolute cursor y
 };
+
+#define INPUT_EVENT_KEYBOARD     1
+#define INPUT_EVENT_MOUSE_MOVE   2
+#define INPUT_EVENT_MOUSE_BUTTON 3
 
 // TODO(HUMAN): Next GUI syscalls you probably want:
 // - SYS_FB_PRESENT (copy user backbuffer to framebuffer)
