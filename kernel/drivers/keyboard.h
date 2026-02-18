@@ -31,6 +31,7 @@
 #define MOD_SHIFT     0x01
 #define MOD_CTRL      0x02
 #define MOD_ALT       0x04
+#define MOD_SUPER     0x08
 
 // Key event structure
 struct key_event {
@@ -59,5 +60,6 @@ int keyboard_poll_event(struct key_event *event);
 // Returns the ASCII char, or 0 for non-printable keys
 // Fills modifiers if not NULL
 char keyboard_getchar(uint8_t *modifiers);
+uint8_t keyboard_get_modifiers(void);
 
 #endif

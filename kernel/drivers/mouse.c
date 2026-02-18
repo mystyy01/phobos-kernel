@@ -108,26 +108,10 @@ void mouse_init(void) {
     if (mouse_write_cmd(0xF4)) (void)mouse_read_data(&ack);
 }
 
-void mouse_handle_byte(uint8_t data_byte) {
-    if (packet_idx == 0 && (data_byte & 0x08) == 0) {
-        return; // out-of-sync; wait for a valid first byte
-    }
-
-    packet[packet_idx++] = data_byte;
-    if (packet_idx < 3) {
-        return;
-    }
-    packet_idx = 0;
-
-    int8_t dx = (int8_t)packet[1];
-    int8_t dy = (int8_t)packet[2];
-
-    if (packet[0] & 0x40) dx = 0; // x overflow
-    if (packet[0] & 0x80) dy = 0; // y overflow
-
+void mouse_update_relative(int dx, int dy, uint8_t buttons) {
     if (dx != 0 || dy != 0) {
-        mouse_x += (int)dx;
-        mouse_y -= (int)dy; // PS/2 y is positive up; screen y is positive down
+        mouse_x += dx;
+        mouse_y += dy;
 
         int max_x = fb_width() - 1;
         int max_y = fb_height() - 1;
@@ -142,14 +126,13 @@ void mouse_handle_byte(uint8_t data_byte) {
         move_ev.type = MOUSE_EVENT_MOVE;
         move_ev.x = (int16_t)mouse_x;
         move_ev.y = (int16_t)mouse_y;
-        move_ev.buttons = packet[0] & 0x07;
+        move_ev.buttons = buttons;
         move_ev.button = 0;
         move_ev.pressed = 0;
         mouse_queue_event(&move_ev);
     }
 
-    uint8_t new_buttons = packet[0] & 0x07;
-    uint8_t changed = (uint8_t)(new_buttons ^ mouse_buttons);
+    uint8_t changed = (uint8_t)(buttons ^ mouse_buttons);
     if (changed) {
         for (int b = 0; b < 3; b++) {
             uint8_t mask = (uint8_t)(1u << b);
@@ -159,14 +142,86 @@ void mouse_handle_byte(uint8_t data_byte) {
             btn_ev.type = MOUSE_EVENT_BUTTON;
             btn_ev.x = (int16_t)mouse_x;
             btn_ev.y = (int16_t)mouse_y;
-            btn_ev.buttons = new_buttons;
+            btn_ev.buttons = buttons;
             btn_ev.button = (uint8_t)(b + 1);
-            btn_ev.pressed = (new_buttons & mask) ? 1u : 0u;
+            btn_ev.pressed = (buttons & mask) ? 1u : 0u;
             mouse_queue_event(&btn_ev);
         }
     }
 
-    mouse_buttons = new_buttons;
+    mouse_buttons = buttons;
+}
+
+void mouse_update_absolute(int abs_x, int abs_y, int abs_max_x, int abs_max_y, uint8_t buttons) {
+    int w = fb_width();
+    int h = fb_height();
+    if (w <= 0) w = 1;
+    if (h <= 0) h = 1;
+    if (abs_max_x <= 0) abs_max_x = 1;
+    if (abs_max_y <= 0) abs_max_y = 1;
+
+    int new_x = (abs_x * (w - 1)) / abs_max_x;
+    int new_y = (abs_y * (h - 1)) / abs_max_y;
+    if (new_x < 0) new_x = 0;
+    if (new_y < 0) new_y = 0;
+    if (new_x >= w) new_x = w - 1;
+    if (new_y >= h) new_y = h - 1;
+
+    if (new_x != mouse_x || new_y != mouse_y) {
+        mouse_x = new_x;
+        mouse_y = new_y;
+
+        struct mouse_event move_ev;
+        move_ev.type = MOUSE_EVENT_MOVE;
+        move_ev.x = (int16_t)mouse_x;
+        move_ev.y = (int16_t)mouse_y;
+        move_ev.buttons = buttons;
+        move_ev.button = 0;
+        move_ev.pressed = 0;
+        mouse_queue_event(&move_ev);
+    }
+
+    uint8_t changed = (uint8_t)(buttons ^ mouse_buttons);
+    if (changed) {
+        for (int b = 0; b < 3; b++) {
+            uint8_t mask = (uint8_t)(1u << b);
+            if ((changed & mask) == 0) continue;
+
+            struct mouse_event btn_ev;
+            btn_ev.type = MOUSE_EVENT_BUTTON;
+            btn_ev.x = (int16_t)mouse_x;
+            btn_ev.y = (int16_t)mouse_y;
+            btn_ev.buttons = buttons;
+            btn_ev.button = (uint8_t)(b + 1);
+            btn_ev.pressed = (buttons & mask) ? 1u : 0u;
+            mouse_queue_event(&btn_ev);
+        }
+    }
+
+    mouse_buttons = buttons;
+}
+
+void mouse_handle_byte(uint8_t data_byte) {
+    if (packet_idx == 0 && (data_byte & 0x08) == 0) {
+        return; // out-of-sync; wait for a valid first byte
+    }
+
+    packet[packet_idx++] = data_byte;
+    if (packet_idx < 3) {
+        return;
+    }
+    packet_idx = 0;
+
+    if ((packet[0] & 0xC0) != 0) {
+        return; // overflow in X or Y — discard packet
+    }
+
+    int dx = (int)packet[1] - ((packet[0] & 0x10) ? 256 : 0);
+    int dy = (int)packet[2] - ((packet[0] & 0x20) ? 256 : 0);
+    uint8_t buttons = packet[0] & 0x07;
+
+    // PS/2 Y is positive up; screen Y is positive down — negate dy
+    mouse_update_relative(dx, -dy, buttons);
 }
 
 int mouse_poll_event(struct mouse_event *out) {

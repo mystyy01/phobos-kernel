@@ -111,8 +111,6 @@ extern uint64_t user_ctx_rflags;
 
 uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
                          uint64_t arg3, uint64_t arg4, uint64_t arg5) {
-    (void)arg4; (void)arg5;
-
     switch (num) {
 
         case SYS_EXIT: {
@@ -569,7 +567,7 @@ uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
                     ? INPUT_EVENT_MOUSE_BUTTON
                     : INPUT_EVENT_MOUSE_MOVE);
                 out->key = 0;
-                out->modifiers = 0;
+                out->modifiers = keyboard_get_modifiers();
                 out->pressed = (uint8_t)mev.pressed;
                 out->scancode = (uint8_t)mev.button;
                 out->mouse_buttons = (uint8_t)mev.buttons;
@@ -636,6 +634,17 @@ uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
             uint64_t size = w * h * bytes_pp;
 
             fb_present_buffer(src, size);
+            return 0;
+        }
+
+        case SYS_FB_PRESENT_RECT: {
+            const void *src = (const void *)arg1;
+            int x = (int)arg2;
+            int y = (int)arg3;
+            int w = (int)arg4;
+            int h = (int)arg5;
+            if (!src) return -1;
+            fb_present_buffer_rect(src, x, y, w, h);
             return 0;
         }
 

@@ -4,6 +4,7 @@
 #include "drivers/ata.h"
 #include "drivers/keyboard.h"
 #include "drivers/mouse.h"
+#include "drivers/uhci.h"
 #include "drivers/framebuffer.h"
 #include "font.h"
 #include "fs/fat32.h"
@@ -90,6 +91,7 @@ void kernel_main(void) {
     keyboard_init();
     idt_init();
     mouse_init();
+    uhci_init();
 
     // Initialize syscall mechanism
     syscall_init();

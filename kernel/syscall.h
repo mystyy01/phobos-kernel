@@ -48,6 +48,7 @@
 #define SYS_TICKS     32  // ticks() -> uint64_t
 #define SYS_FB_MAP    33  // fb_map() -> vaddr of user backbuffer (or 0)
 #define SYS_FB_PRESENT 34 // fb_present(void *buf) -> 0
+#define SYS_FB_PRESENT_RECT 35 // fb_present_rect(void *buf, int x, int y, int w, int h) -> 0
 
 // signal numbers
 #define SIGKILL     9
@@ -101,7 +102,7 @@ struct user_fb_info {
 struct user_input_event {
     uint8_t type;       // INPUT_EVENT_*
     uint8_t key;        // ASCII or special key
-    uint8_t modifiers;  // MOD_SHIFT, MOD_CTRL, MOD_ALT
+    uint8_t modifiers;  // MOD_SHIFT, MOD_CTRL, MOD_ALT, MOD_SUPER
     uint8_t pressed;    // 1 = key press, 0 = key release
     uint8_t scancode;   // raw scan code
     uint8_t mouse_buttons; // bitmask: 1 left, 2 right, 4 middle
@@ -112,6 +113,11 @@ struct user_input_event {
 #define INPUT_EVENT_KEYBOARD     1
 #define INPUT_EVENT_MOUSE_MOVE   2
 #define INPUT_EVENT_MOUSE_BUTTON 3
+
+#define MOD_SHIFT 0x01
+#define MOD_CTRL  0x02
+#define MOD_ALT   0x04
+#define MOD_SUPER 0x08
 
 // TODO(HUMAN): Next GUI syscalls you probably want:
 // - SYS_FB_PRESENT (copy user backbuffer to framebuffer)

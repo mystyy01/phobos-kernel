@@ -71,3 +71,60 @@ void fb_present_buffer(const void *src, uint64_t size){
         for (uint64_t i = 0; i < rem; i++) db[i] = sb[i];
     }
 }
+
+void fb_present_buffer_rect(const void *src, int x, int y, int w, int h){
+    if (!fb || !src) return;
+    if (w <= 0 || h <= 0) return;
+
+    int cx = x;
+    int cy = y;
+    int cw = w;
+    int ch = h;
+
+    if (cx < 0) {
+        cw += cx;
+        cx = 0;
+    }
+    if (cy < 0) {
+        ch += cy;
+        cy = 0;
+    }
+    if (cw <= 0 || ch <= 0) return;
+    if (cx >= (int)width || cy >= (int)height) return;
+
+    if (cx + cw > (int)width)  cw = (int)width - cx;
+    if (cy + ch > (int)height) ch = (int)height - cy;
+    if (cw <= 0 || ch <= 0) return;
+
+    int bytes_per_pixel = bpp / 8;
+    if (bytes_per_pixel <= 0) return;
+
+    uint64_t stride = (uint64_t)width * (uint64_t)bytes_per_pixel;
+    uint64_t row_bytes = (uint64_t)cw * (uint64_t)bytes_per_pixel;
+
+    const uint8_t *srow = (const uint8_t *)src + ((uint64_t)cy * stride) + ((uint64_t)cx * (uint64_t)bytes_per_pixel);
+    uint8_t *drow = fb + ((uint64_t)cy * stride) + ((uint64_t)cx * (uint64_t)bytes_per_pixel);
+
+    for (int row = 0; row < ch; row++) {
+        uint64_t qwords = row_bytes / 8;
+        const void *s = srow;
+        void *d = drow;
+
+        __asm__ volatile (
+            "rep movsq"
+            : "+S"(s), "+D"(d), "+c"(qwords)
+            :
+            : "memory"
+        );
+
+        uint64_t rem = row_bytes & 7;
+        if (rem) {
+            const uint8_t *sb = (const uint8_t *)s;
+            uint8_t *db = (uint8_t *)d;
+            for (uint64_t i = 0; i < rem; i++) db[i] = sb[i];
+        }
+
+        srow += stride;
+        drow += stride;
+    }
+}

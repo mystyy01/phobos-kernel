@@ -17,6 +17,8 @@ struct mouse_event {
 
 void mouse_init(void);
 void mouse_handle_byte(uint8_t data_byte);
+void mouse_update_relative(int dx, int dy, uint8_t buttons);
+void mouse_update_absolute(int abs_x, int abs_y, int abs_max_x, int abs_max_y, uint8_t buttons);
 int mouse_poll_event(struct mouse_event *out);
 int mouse_get_x(void);
 int mouse_get_y(void);

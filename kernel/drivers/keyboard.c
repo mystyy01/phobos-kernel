@@ -69,6 +69,8 @@ static const char scancode_upper[128] = {
 #define SC_EXT_DELETE 0x53
 #define SC_EXT_RCTRL  0x1D
 #define SC_EXT_RALT   0x38
+#define SC_EXT_LSUPER 0x5B
+#define SC_EXT_RSUPER 0x5C
 
 void keyboard_init(void) {
     key_read_idx = 0;
@@ -110,6 +112,12 @@ void keyboard_handle_scancode(uint8_t scancode) {
     if (code == SC_LALT || (extended && code == SC_EXT_RALT)) {
         if (released) mod_state &= ~MOD_ALT;
         else mod_state |= MOD_ALT;
+        extended = 0;
+        return;
+    }
+    if (extended && (code == SC_EXT_LSUPER || code == SC_EXT_RSUPER)) {
+        if (released) mod_state &= ~MOD_SUPER;
+        else mod_state |= MOD_SUPER;
         extended = 0;
         return;
     }
@@ -234,4 +242,8 @@ char keyboard_getchar(uint8_t *modifiers) {
             return 0;
         }
     }
+}
+
+uint8_t keyboard_get_modifiers(void) {
+    return mod_state;
 }

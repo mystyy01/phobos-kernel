@@ -43,6 +43,7 @@
 #define SYS_TICKS     32  // ticks() -> current tick count
 #define SYS_FB_MAP    33  // fb_map() -> vaddr of user backbuffer
 #define SYS_FB_PRESENT 34 // fb_present(void *buf) -> 0
+#define SYS_FB_PRESENT_RECT 35 // fb_present_rect(void *buf, int x, int y, int w, int h) -> 0
 
 // signal numbers
 #define SIGKILL     9
@@ -127,6 +128,11 @@ struct user_input_event {
 #define INPUT_EVENT_MOUSE_MOVE   2
 #define INPUT_EVENT_MOUSE_BUTTON 3
 
+#define MOD_SHIFT 0x01
+#define MOD_CTRL  0x02
+#define MOD_ALT   0x04
+#define MOD_SUPER 0x08
+
 // ============================================================================
 // Syscall Wrappers
 // ============================================================================
@@ -170,6 +176,31 @@ static inline long syscall3(long num, long arg1, long arg2, long arg3) {
         "syscall"
         : "=a"(result)
         : "a"(num), "D"(arg1), "S"(arg2), "d"(arg3)
+        : "rcx", "r11", "memory"
+    );
+    return result;
+}
+
+static inline long syscall4(long num, long arg1, long arg2, long arg3, long arg4) {
+    long result;
+    register long r10 __asm__("r10") = arg4;
+    __asm__ volatile (
+        "syscall"
+        : "=a"(result)
+        : "a"(num), "D"(arg1), "S"(arg2), "d"(arg3), "r"(r10)
+        : "rcx", "r11", "memory"
+    );
+    return result;
+}
+
+static inline long syscall5(long num, long arg1, long arg2, long arg3, long arg4, long arg5) {
+    long result;
+    register long r10 __asm__("r10") = arg4;
+    register long r8 __asm__("r8") = arg5;
+    __asm__ volatile (
+        "syscall"
+        : "=a"(result)
+        : "a"(num), "D"(arg1), "S"(arg2), "d"(arg3), "r"(r10), "r"(r8)
         : "rcx", "r11", "memory"
     );
     return result;
@@ -327,6 +358,10 @@ static inline long fb_map(void) {
 
 static inline int fb_present(void *buf) {
     return (int)syscall1(SYS_FB_PRESENT, (long)buf);
+}
+
+static inline int fb_present_rect(void *buf, int x, int y, int w, int h) {
+    return (int)syscall5(SYS_FB_PRESENT_RECT, (long)buf, x, y, w, h);
 }
 
 #endif // LIBSYS_H

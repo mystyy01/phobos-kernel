@@ -1,6 +1,7 @@
 #include "isr.h"
 #include "drivers/keyboard.h"
 #include "drivers/mouse.h"
+#include "drivers/uhci.h"
 #include "sched.h"
 
 // System tick counter (incremented by timer IRQ ~18.2 times/sec by default PIT)
@@ -104,6 +105,7 @@ struct irq_frame *irq_handler(uint64_t int_no, struct irq_frame *frame) {
     if (int_no == 32) {
         // Timer interrupt - increment system tick counter and schedule
         system_ticks++;
+        uhci_poll();
         frame = sched_tick(frame);
     } else if (int_no == 33) {
         // Keyboard interrupt - read scancode and pass to keyboard driver
