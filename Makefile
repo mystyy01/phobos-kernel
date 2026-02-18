@@ -25,6 +25,7 @@ KERNEL_C_SRCS := \
 	$(KERNEL_DIR)/drivers/mouse.c \
 	$(KERNEL_DIR)/drivers/pci.c \
 	$(KERNEL_DIR)/drivers/uhci.c \
+	$(KERNEL_DIR)/drivers/virtio_gpu.c \
 	$(KERNEL_DIR)/drivers/framebuffer.c \
 	$(KERNEL_DIR)/fs/vfs.c \
 	$(KERNEL_DIR)/fs/fat32.c \

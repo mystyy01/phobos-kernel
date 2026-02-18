@@ -9,7 +9,12 @@ struct pci_device {
     uint8_t  func;
     uint16_t vendor_id;
     uint16_t device_id;
+    uint32_t bar0;
+    uint32_t bar1;
+    uint32_t bar2;
+    uint32_t bar3;
     uint32_t bar4;
+    uint32_t bar5;
     uint8_t  irq;
 };
 
@@ -21,5 +26,7 @@ void     pci_config_write32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t off
 
 // Find a PCI device by class/subclass/prog_if. Returns 1 if found, 0 if not.
 int pci_find_device(uint8_t class_code, uint8_t subclass, uint8_t prog_if, struct pci_device *out);
+// Find a PCI device by vendor/device id. Returns 1 if found, 0 if not.
+int pci_find_device_by_id(uint16_t vendor_id, uint16_t device_id, struct pci_device *out);
 
 #endif

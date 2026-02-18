@@ -72,13 +72,58 @@ int pci_find_device(uint8_t class_code, uint8_t subclass, uint8_t prog_if, struc
                         out->func      = (uint8_t)func;
                         out->vendor_id = vendor;
                         out->device_id = (uint16_t)(id >> 16);
+                        out->bar0      = pci_config_read32(bus, slot, func, 0x10);
+                        out->bar1      = pci_config_read32(bus, slot, func, 0x14);
+                        out->bar2      = pci_config_read32(bus, slot, func, 0x18);
+                        out->bar3      = pci_config_read32(bus, slot, func, 0x1C);
                         out->bar4      = pci_config_read32(bus, slot, func, 0x20);
+                        out->bar5      = pci_config_read32(bus, slot, func, 0x24);
                         out->irq       = pci_config_read8(bus, slot, func, 0x3C);
                     }
                     return 1;
                 }
 
                 // Only scan func > 0 if multi-function
+                if (func == 0) {
+                    uint8_t header = pci_config_read8(bus, slot, func, 0x0E);
+                    if ((header & 0x80) == 0) break;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+int pci_find_device_by_id(uint16_t vendor_id, uint16_t device_id, struct pci_device *out) {
+    for (int bus = 0; bus < 256; bus++) {
+        for (int slot = 0; slot < 32; slot++) {
+            for (int func = 0; func < 8; func++) {
+                uint32_t id = pci_config_read32(bus, slot, func, 0x00);
+                uint16_t vendor = (uint16_t)(id & 0xFFFF);
+                if (vendor == 0xFFFF) {
+                    if (func == 0) break;
+                    continue;
+                }
+
+                uint16_t device = (uint16_t)(id >> 16);
+                if (vendor == vendor_id && device == device_id) {
+                    if (out) {
+                        out->bus       = (uint8_t)bus;
+                        out->slot      = (uint8_t)slot;
+                        out->func      = (uint8_t)func;
+                        out->vendor_id = vendor;
+                        out->device_id = device;
+                        out->bar0      = pci_config_read32(bus, slot, func, 0x10);
+                        out->bar1      = pci_config_read32(bus, slot, func, 0x14);
+                        out->bar2      = pci_config_read32(bus, slot, func, 0x18);
+                        out->bar3      = pci_config_read32(bus, slot, func, 0x1C);
+                        out->bar4      = pci_config_read32(bus, slot, func, 0x20);
+                        out->bar5      = pci_config_read32(bus, slot, func, 0x24);
+                        out->irq       = pci_config_read8(bus, slot, func, 0x3C);
+                    }
+                    return 1;
+                }
+
                 if (func == 0) {
                     uint8_t header = pci_config_read8(bus, slot, func, 0x0E);
                     if ((header & 0x80) == 0) break;

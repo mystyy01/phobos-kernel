@@ -6,6 +6,7 @@
 #include "drivers/mouse.h"
 #include "drivers/uhci.h"
 #include "drivers/framebuffer.h"
+#include "drivers/virtio_gpu.h"
 #include "font.h"
 #include "fs/fat32.h"
 #include "fs/vfs.h"
@@ -92,6 +93,7 @@ void kernel_main(void) {
     idt_init();
     mouse_init();
     uhci_init();
+    virtio_gpu_init();
 
     // Initialize syscall mechanism
     syscall_init();
