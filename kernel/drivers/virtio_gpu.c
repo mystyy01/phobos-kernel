@@ -8,6 +8,14 @@
 #define VIRTIO_GPU_DEVICE_MODERN   0x1050
 #define VIRTIO_GPU_DEVICE_LEGACY   0x1005
 
+#define PCI_STATUS_CAP_LIST        0x0010
+#define PCI_CAP_ID_VENDOR_SPECIFIC 0x09
+
+// virtio-pci modern capability types
+#define VIRTIO_PCI_CAP_COMMON_CFG  1
+#define VIRTIO_PCI_CAP_NOTIFY_CFG  2
+#define VIRTIO_PCI_CAP_ISR_CFG     3
+
 // Legacy virtio-pci register layout
 #define VIRTIO_PCI_HOST_FEATURES   0x00
 #define VIRTIO_PCI_GUEST_FEATURES  0x04
@@ -142,14 +150,39 @@ struct virtio_queue {
     struct virtq_desc *desc;
     struct virtq_avail *avail;
     struct virtq_used *used;
+    uint16_t notify_off;
     uint16_t next_avail_idx;
     uint16_t last_used_idx;
 };
 
+struct virtio_pci_common_cfg {
+    uint32_t device_feature_select;
+    uint32_t device_feature;
+    uint32_t driver_feature_select;
+    uint32_t driver_feature;
+    uint16_t msix_config;
+    uint16_t num_queues;
+    uint8_t  device_status;
+    uint8_t  config_generation;
+    uint16_t queue_select;
+    uint16_t queue_size;
+    uint16_t queue_msix_vector;
+    uint16_t queue_enable;
+    uint16_t queue_notify_off;
+    uint64_t queue_desc;
+    uint64_t queue_driver;
+    uint64_t queue_device;
+} __attribute__((packed));
+
 static int g_ready = 0;
 static int g_use_io = 0;
+static int g_transport_modern = 0;
 static uint16_t g_io_base = 0;
 static volatile uint8_t *g_mmio = 0;
+static volatile struct virtio_pci_common_cfg *g_modern_common = 0;
+static volatile uint8_t *g_modern_notify_base = 0;
+static uint32_t g_modern_notify_mult = 0;
+static volatile uint8_t *g_modern_isr = 0;
 static struct virtio_queue g_ctrlq;
 static struct virtio_queue g_cursorq;
 static struct virtio_gpu_ctrl_hdr g_req_hdr __attribute__((aligned(16)));
@@ -160,6 +193,46 @@ static uint32_t g_scanout_h;
 static uint32_t g_resource_id = 1;
 static uint8_t *g_resource_backing;
 static uint64_t g_resource_backing_bytes;
+
+struct clipped_rect {
+    uint32_t x;
+    uint32_t y;
+    uint32_t w;
+    uint32_t h;
+};
+
+static uint32_t min_u32(uint32_t a, uint32_t b) {
+    return (a < b) ? a : b;
+}
+
+static uint32_t pci_dev_bar(const struct pci_device *dev, uint8_t idx) {
+    if (!dev || idx > 5) return 0;
+    switch (idx) {
+        case 0: return dev->bar0;
+        case 1: return dev->bar1;
+        case 2: return dev->bar2;
+        case 3: return dev->bar3;
+        case 4: return dev->bar4;
+        case 5: return dev->bar5;
+        default: return 0;
+    }
+}
+
+static uint64_t pci_bar_mem_base(const struct pci_device *dev, uint8_t idx) {
+    if (!dev || idx > 5) return 0;
+    uint32_t low = pci_dev_bar(dev, idx);
+    if (low == 0 || low == 0xFFFFFFFFu) return 0;
+    if (low & 0x1) return 0; // I/O BAR
+
+    uint64_t base = (uint64_t)(low & ~0xFu);
+    uint32_t type = (low >> 1) & 0x3;
+    if (type == 0x2) { // 64-bit BAR
+        if (idx >= 5) return 0;
+        uint32_t high = pci_dev_bar(dev, (uint8_t)(idx + 1));
+        base |= ((uint64_t)high << 32);
+    }
+    return base;
+}
 
 static inline uint8_t inb(uint16_t port) {
     uint8_t value;
@@ -252,6 +325,57 @@ static int map_mmio_identity(uint64_t phys, uint64_t size) {
     return 1;
 }
 
+static int virtio_pci_find_modern_caps(const struct pci_device *dev) {
+    if (!dev) return 0;
+
+    uint16_t status = pci_config_read16(dev->bus, dev->slot, dev->func, 0x06);
+    if ((status & PCI_STATUS_CAP_LIST) == 0) {
+        return 0;
+    }
+
+    uint8_t cap_ptr = (uint8_t)(pci_config_read8(dev->bus, dev->slot, dev->func, 0x34) & ~0x3u);
+    int guard = 0;
+    while (cap_ptr != 0 && guard++ < 64) {
+        uint8_t cap_id = pci_config_read8(dev->bus, dev->slot, dev->func, cap_ptr + 0);
+        uint8_t next = (uint8_t)(pci_config_read8(dev->bus, dev->slot, dev->func, cap_ptr + 1) & ~0x3u);
+
+        if (cap_id == PCI_CAP_ID_VENDOR_SPECIFIC) {
+            uint8_t cfg_type = pci_config_read8(dev->bus, dev->slot, dev->func, cap_ptr + 3);
+            uint8_t bar = pci_config_read8(dev->bus, dev->slot, dev->func, cap_ptr + 4);
+            uint32_t off = pci_config_read32(dev->bus, dev->slot, dev->func, cap_ptr + 8);
+            uint32_t len = pci_config_read32(dev->bus, dev->slot, dev->func, cap_ptr + 12);
+
+            uint64_t bar_base = pci_bar_mem_base(dev, bar);
+            if (bar_base != 0 && len != 0) {
+                uint64_t phys = bar_base + (uint64_t)off;
+                if (!map_mmio_identity(phys, len)) {
+                    dbg_str("[virtio-gpu] cap MMIO map failed\n");
+                    return 0;
+                }
+
+                if (cfg_type == VIRTIO_PCI_CAP_COMMON_CFG) {
+                    g_modern_common = (volatile struct virtio_pci_common_cfg *)(uintptr_t)phys;
+                } else if (cfg_type == VIRTIO_PCI_CAP_NOTIFY_CFG) {
+                    g_modern_notify_base = (volatile uint8_t *)(uintptr_t)phys;
+                    g_modern_notify_mult = pci_config_read32(dev->bus, dev->slot, dev->func, cap_ptr + 16);
+                } else if (cfg_type == VIRTIO_PCI_CAP_ISR_CFG) {
+                    g_modern_isr = (volatile uint8_t *)(uintptr_t)phys;
+                }
+            }
+        }
+
+        cap_ptr = next;
+    }
+
+    if (!g_modern_common || !g_modern_notify_base) {
+        return 0;
+    }
+    if (g_modern_notify_mult == 0) {
+        g_modern_notify_mult = 2;
+    }
+    return 1;
+}
+
 static uint8_t *alloc_contiguous_pages(int pages) {
     if (pages <= 0) return 0;
     uint8_t *first = (uint8_t *)pmm_alloc_page();
@@ -278,6 +402,35 @@ static uint8_t *alloc_contiguous_pages(int pages) {
 static void mem_zero(void *ptr, uint64_t n) {
     uint8_t *p = (uint8_t *)ptr;
     for (uint64_t i = 0; i < n; i++) p[i] = 0;
+}
+
+static void mem_copy(void *dst, const void *src, uint64_t n) {
+    uint8_t *d = (uint8_t *)dst;
+    const uint8_t *s = (const uint8_t *)src;
+    for (uint64_t i = 0; i < n; i++) d[i] = s[i];
+}
+
+static int clip_rect_to_bounds(int x, int y, int w, int h, uint32_t max_w, uint32_t max_h, struct clipped_rect *out) {
+    if (!out) return 0;
+    if (w <= 0 || h <= 0) return 0;
+    if (max_w == 0 || max_h == 0) return 0;
+
+    int x0 = x;
+    int y0 = y;
+    int x1 = x + w;
+    int y1 = y + h;
+
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > (int)max_w) x1 = (int)max_w;
+    if (y1 > (int)max_h) y1 = (int)max_h;
+    if (x0 >= x1 || y0 >= y1) return 0;
+
+    out->x = (uint32_t)x0;
+    out->y = (uint32_t)y0;
+    out->w = (uint32_t)(x1 - x0);
+    out->h = (uint32_t)(y1 - y0);
+    return 1;
 }
 
 static int virtio_queue_setup_legacy(uint16_t queue_id, uint16_t requested_size, struct virtio_queue *out) {
@@ -318,9 +471,56 @@ static int virtio_queue_setup_legacy(uint16_t queue_id, uint16_t requested_size,
     out->desc = (struct virtq_desc *)(queue_mem);
     out->avail = (struct virtq_avail *)(queue_mem + desc_bytes);
     out->used = (struct virtq_used *)(queue_mem + used_off);
+    out->notify_off = 0;
     out->next_avail_idx = 0;
     out->last_used_idx = 0;
     return 1;
+}
+
+static int virtio_queue_setup_modern(uint16_t queue_id, uint16_t requested_size, struct virtio_queue *out) {
+    if (!out || !g_modern_common) return 0;
+
+    volatile struct virtio_pci_common_cfg *cc = g_modern_common;
+    cc->queue_select = queue_id;
+    uint16_t max_size = cc->queue_size;
+    if (max_size == 0) {
+        return 0;
+    }
+
+    uint16_t qsz = requested_size;
+    if (qsz == 0 || qsz > max_size) qsz = max_size;
+
+    uint64_t desc_bytes = (uint64_t)qsz * sizeof(struct virtq_desc);
+    uint64_t avail_bytes = 4 + ((uint64_t)qsz * 2) + 2;
+    uint64_t used_off = align_up_u64(desc_bytes + avail_bytes, 4096);
+    uint64_t used_bytes = 4 + ((uint64_t)qsz * sizeof(struct virtq_used_elem)) + 2;
+    uint64_t total_bytes = used_off + used_bytes;
+    int pages = (int)(align_up_u64(total_bytes, 4096) / 4096);
+
+    uint8_t *queue_mem = alloc_contiguous_pages(pages);
+    if (!queue_mem) {
+        return 0;
+    }
+    mem_zero(queue_mem, (uint64_t)pages * 4096);
+
+    out->size = qsz;
+    out->bytes = (uint64_t)pages * 4096;
+    out->mem = queue_mem;
+    out->desc = (struct virtq_desc *)(queue_mem);
+    out->avail = (struct virtq_avail *)(queue_mem + desc_bytes);
+    out->used = (struct virtq_used *)(queue_mem + used_off);
+    out->notify_off = cc->queue_notify_off;
+    out->next_avail_idx = 0;
+    out->last_used_idx = 0;
+
+    cc->queue_size = qsz;
+    cc->queue_msix_vector = 0xFFFFu;
+    cc->queue_desc = (uint64_t)(uintptr_t)out->desc;
+    cc->queue_driver = (uint64_t)(uintptr_t)out->avail;
+    cc->queue_device = (uint64_t)(uintptr_t)out->used;
+    cc->queue_enable = 1;
+
+    return cc->queue_enable == 1;
 }
 
 static int virtio_gpu_submit_sync(struct virtio_queue *q, uint16_t queue_id,
@@ -345,7 +545,13 @@ static int virtio_gpu_submit_sync(struct virtio_queue *q, uint16_t queue_id,
     q->next_avail_idx++;
     q->avail->idx = q->next_avail_idx;
 
-    vgpu_write16(VIRTIO_PCI_QUEUE_NOTIFY, queue_id);
+    if (g_transport_modern) {
+        volatile uint16_t *notify_reg = (volatile uint16_t *)(g_modern_notify_base +
+            ((uint32_t)q->notify_off * g_modern_notify_mult));
+        *notify_reg = queue_id;
+    } else {
+        vgpu_write16(VIRTIO_PCI_QUEUE_NOTIFY, queue_id);
+    }
 
     uint32_t timeout = 20000000;
     while (q->used->idx == q->last_used_idx && timeout--) {
@@ -356,7 +562,13 @@ static int virtio_gpu_submit_sync(struct virtio_queue *q, uint16_t queue_id,
     }
 
     q->last_used_idx = q->used->idx;
-    (void)vgpu_read8(VIRTIO_PCI_ISR);
+    if (g_transport_modern) {
+        if (g_modern_isr) {
+            (void)(*g_modern_isr);
+        }
+    } else {
+        (void)vgpu_read8(VIRTIO_PCI_ISR);
+    }
     return 1;
 }
 
@@ -488,18 +700,18 @@ static int virtio_gpu_set_scanout(uint32_t scanout_id, uint32_t resource_id, uin
     return virtio_gpu_expect_nodata("SET_SCANOUT", resp.type);
 }
 
-static int virtio_gpu_transfer_to_host(uint32_t resource_id, uint32_t width, uint32_t height) {
+static int virtio_gpu_transfer_to_host(uint32_t resource_id, uint32_t x, uint32_t y, uint32_t width, uint32_t height) {
     struct virtio_gpu_transfer_to_host_2d req;
     struct virtio_gpu_ctrl_hdr resp;
     mem_zero(&req, sizeof(req));
     mem_zero(&resp, sizeof(resp));
 
     req.hdr.type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
-    req.r.x = 0;
-    req.r.y = 0;
+    req.r.x = x;
+    req.r.y = y;
     req.r.width = width;
     req.r.height = height;
-    req.offset = 0;
+    req.offset = (uint64_t)(y * g_scanout_w + x) * 4ULL;
     req.resource_id = resource_id;
 
     if (!virtio_gpu_submit_ctrl(&req, sizeof(req), &resp, sizeof(resp))) {
@@ -509,15 +721,15 @@ static int virtio_gpu_transfer_to_host(uint32_t resource_id, uint32_t width, uin
     return virtio_gpu_expect_nodata("TRANSFER_TO_HOST_2D", resp.type);
 }
 
-static int virtio_gpu_flush_resource(uint32_t resource_id, uint32_t width, uint32_t height) {
+static int virtio_gpu_flush_resource(uint32_t resource_id, uint32_t x, uint32_t y, uint32_t width, uint32_t height) {
     struct virtio_gpu_resource_flush req;
     struct virtio_gpu_ctrl_hdr resp;
     mem_zero(&req, sizeof(req));
     mem_zero(&resp, sizeof(resp));
 
     req.hdr.type = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
-    req.r.x = 0;
-    req.r.y = 0;
+    req.r.x = x;
+    req.r.y = y;
     req.r.width = width;
     req.r.height = height;
     req.resource_id = resource_id;
@@ -549,54 +761,67 @@ static int virtio_gpu_setup_boot_framebuffer(void) {
     if (!virtio_gpu_create_2d_resource(g_resource_id, g_scanout_w, g_scanout_h)) return 0;
     if (!virtio_gpu_attach_backing(g_resource_id, g_resource_backing, (uint32_t)bytes)) return 0;
     if (!virtio_gpu_set_scanout(g_scanout_id, g_resource_id, g_scanout_w, g_scanout_h)) return 0;
-    if (!virtio_gpu_transfer_to_host(g_resource_id, g_scanout_w, g_scanout_h)) return 0;
-    if (!virtio_gpu_flush_resource(g_resource_id, g_scanout_w, g_scanout_h)) return 0;
+    if (!virtio_gpu_transfer_to_host(g_resource_id, 0, 0, g_scanout_w, g_scanout_h)) return 0;
+    if (!virtio_gpu_flush_resource(g_resource_id, 0, 0, g_scanout_w, g_scanout_h)) return 0;
 
     dbg_str("[virtio-gpu] boot frame submitted\n");
     return 1;
 }
 
-void virtio_gpu_init(void) {
-    struct pci_device dev;
-    int found = pci_find_device_by_id(VIRTIO_VENDOR_ID, VIRTIO_GPU_DEVICE_MODERN, &dev);
-    if (!found) {
-        found = pci_find_device_by_id(VIRTIO_VENDOR_ID, VIRTIO_GPU_DEVICE_LEGACY, &dev);
-    }
-    if (!found) {
-        dbg_str("[virtio-gpu] not found\n");
-        return;
-    }
+static int virtio_gpu_blit_rect(const void *src, uint32_t src_width, const struct clipped_rect *rect) {
+    if (!src || !rect || !g_resource_backing) return 0;
+    if (rect->w == 0 || rect->h == 0) return 0;
 
-    // Enable PCI command bits needed by virtio devices.
-    uint16_t cmd = pci_config_read16(dev.bus, dev.slot, dev.func, 0x04);
-    cmd |= (uint16_t)(0x0001 | 0x0002 | 0x0004); // IO, MEM, BUS MASTER
-    pci_config_write16(dev.bus, dev.slot, dev.func, 0x04, cmd);
+    uint64_t src_stride = (uint64_t)src_width * 4ULL;
+    uint64_t dst_stride = (uint64_t)g_scanout_w * 4ULL;
+    uint64_t row_bytes = (uint64_t)rect->w * 4ULL;
 
-    uint32_t bar0 = pci_config_read32(dev.bus, dev.slot, dev.func, 0x10);
-    if (bar0 == 0 || bar0 == 0xFFFFFFFFu) {
-        dbg_str("[virtio-gpu] BAR0 invalid\n");
-        return;
+    const uint8_t *srow = (const uint8_t *)src + ((uint64_t)rect->y * src_stride) + ((uint64_t)rect->x * 4ULL);
+    uint8_t *drow = g_resource_backing + ((uint64_t)rect->y * dst_stride) + ((uint64_t)rect->x * 4ULL);
+
+    for (uint32_t row = 0; row < rect->h; row++) {
+        mem_copy(drow, srow, row_bytes);
+        srow += src_stride;
+        drow += dst_stride;
     }
+    return 1;
+}
 
-    if (bar0 & 0x1) {
-        g_use_io = 1;
-        g_io_base = (uint16_t)(bar0 & ~0x3u);
-        dbg_str("[virtio-gpu] IO base=");
-        dbg_hex32(g_io_base);
-        dbg_char('\n');
-    } else {
-        g_use_io = 0;
-        uint64_t phys = (uint64_t)(bar0 & ~0xFu);
-        if (!map_mmio_identity(phys, 0x1000)) {
-            dbg_str("[virtio-gpu] MMIO map failed\n");
-            return;
-        }
-        g_mmio = (volatile uint8_t *)(uintptr_t)phys;
-        dbg_str("[virtio-gpu] MMIO base=");
-        dbg_hex32((uint32_t)phys);
-        dbg_char('\n');
+int virtio_gpu_present_full(const void *src, uint32_t src_width, uint32_t src_height, uint32_t src_bpp) {
+    if (!g_ready || !src || !g_resource_backing) return 0;
+    if (src_bpp != 32) return 0;
+
+    struct clipped_rect rect;
+    if (!clip_rect_to_bounds(0, 0,
+                             (int)min_u32(src_width, g_scanout_w),
+                             (int)min_u32(src_height, g_scanout_h),
+                             g_scanout_w, g_scanout_h, &rect)) {
+        return 0;
     }
 
+    if (!virtio_gpu_blit_rect(src, src_width, &rect)) return 0;
+    if (!virtio_gpu_transfer_to_host(g_resource_id, rect.x, rect.y, rect.w, rect.h)) return 0;
+    if (!virtio_gpu_flush_resource(g_resource_id, rect.x, rect.y, rect.w, rect.h)) return 0;
+    return 1;
+}
+
+int virtio_gpu_present_rect(const void *src, uint32_t src_width, uint32_t src_height, uint32_t src_bpp,
+                            int x, int y, int w, int h) {
+    if (!g_ready || !src || !g_resource_backing) return 0;
+    if (src_bpp != 32) return 0;
+
+    uint32_t max_w = min_u32(src_width, g_scanout_w);
+    uint32_t max_h = min_u32(src_height, g_scanout_h);
+
+    struct clipped_rect rect;
+    if (!clip_rect_to_bounds(x, y, w, h, max_w, max_h, &rect)) return 0;
+    if (!virtio_gpu_blit_rect(src, src_width, &rect)) return 0;
+    if (!virtio_gpu_transfer_to_host(g_resource_id, rect.x, rect.y, rect.w, rect.h)) return 0;
+    if (!virtio_gpu_flush_resource(g_resource_id, rect.x, rect.y, rect.w, rect.h)) return 0;
+    return 1;
+}
+
+static int virtio_gpu_transport_init_legacy(void) {
     // Legacy virtio status handshake.
     vgpu_write8(VIRTIO_PCI_STATUS, 0);
     uint8_t status = 0;
@@ -605,36 +830,152 @@ void virtio_gpu_init(void) {
     status |= VIRTIO_STATUS_DRIVER;
     vgpu_write8(VIRTIO_PCI_STATUS, status);
 
-    uint32_t host_features = vgpu_read32(VIRTIO_PCI_HOST_FEATURES);
-    (void)host_features;
+    (void)vgpu_read32(VIRTIO_PCI_HOST_FEATURES);
     vgpu_write32(VIRTIO_PCI_GUEST_FEATURES, 0);
+
+    g_transport_modern = 0;
 
     if (!virtio_queue_setup_legacy(VIRTIO_GPU_QUEUE_CONTROL, 8, &g_ctrlq)) {
         status |= VIRTIO_STATUS_FAILED;
         vgpu_write8(VIRTIO_PCI_STATUS, status);
         dbg_str("[virtio-gpu] control queue setup failed\n");
-        return;
+        return 0;
     }
     if (!virtio_queue_setup_legacy(VIRTIO_GPU_QUEUE_CURSOR, 8, &g_cursorq)) {
         status |= VIRTIO_STATUS_FAILED;
         vgpu_write8(VIRTIO_PCI_STATUS, status);
         dbg_str("[virtio-gpu] cursor queue setup failed\n");
-        return;
+        return 0;
     }
 
     status |= VIRTIO_STATUS_DRIVER_OK;
     vgpu_write8(VIRTIO_PCI_STATUS, status);
+    return 1;
+}
+
+static int virtio_gpu_transport_init_modern(void) {
+    if (!g_modern_common || !g_modern_notify_base) return 0;
+
+    volatile struct virtio_pci_common_cfg *cc = g_modern_common;
+
+    cc->device_status = 0;
+    cc->device_status = VIRTIO_STATUS_ACKNOWLEDGE;
+    cc->device_status |= VIRTIO_STATUS_DRIVER;
+
+    // No optional features negotiated yet.
+    cc->driver_feature_select = 0;
+    cc->driver_feature = 0;
+    cc->driver_feature_select = 1;
+    cc->driver_feature = 0;
+
+    cc->device_status |= VIRTIO_STATUS_FEATURES_OK;
+    if ((cc->device_status & VIRTIO_STATUS_FEATURES_OK) == 0) {
+        cc->device_status |= VIRTIO_STATUS_FAILED;
+        dbg_str("[virtio-gpu] FEATURES_OK rejected\n");
+        return 0;
+    }
+
+    g_transport_modern = 1;
+
+    if (!virtio_queue_setup_modern(VIRTIO_GPU_QUEUE_CONTROL, 8, &g_ctrlq)) {
+        cc->device_status |= VIRTIO_STATUS_FAILED;
+        dbg_str("[virtio-gpu] control queue setup failed\n");
+        return 0;
+    }
+    if (!virtio_queue_setup_modern(VIRTIO_GPU_QUEUE_CURSOR, 8, &g_cursorq)) {
+        cc->device_status |= VIRTIO_STATUS_FAILED;
+        dbg_str("[virtio-gpu] cursor queue setup failed\n");
+        return 0;
+    }
+
+    cc->device_status |= VIRTIO_STATUS_DRIVER_OK;
+    return 1;
+}
+
+void virtio_gpu_init(void) {
+    struct pci_device dev;
+    int found = pci_find_device_by_id(VIRTIO_VENDOR_ID, VIRTIO_GPU_DEVICE_LEGACY, &dev);
+    if (!found) {
+        found = pci_find_device_by_id(VIRTIO_VENDOR_ID, VIRTIO_GPU_DEVICE_MODERN, &dev);
+    }
+    if (!found) {
+        dbg_str("[virtio-gpu] not found\n");
+        return;
+    }
+
+    dbg_str("[virtio-gpu] pci vid=");
+    dbg_hex32(dev.vendor_id);
+    dbg_str(" did=");
+    dbg_hex32(dev.device_id);
+    dbg_char('\n');
+
+    // Enable PCI command bits needed by virtio devices.
+    uint16_t cmd = pci_config_read16(dev.bus, dev.slot, dev.func, 0x04);
+    cmd |= (uint16_t)(0x0001 | 0x0002 | 0x0004); // IO, MEM, BUS MASTER
+    pci_config_write16(dev.bus, dev.slot, dev.func, 0x04, cmd);
+
+    uint16_t io_base = 0;
+
+    dbg_str("[virtio-gpu] BAR0=");
+    dbg_hex32(dev.bar0);
+    dbg_str(" BAR1=");
+    dbg_hex32(dev.bar1);
+    dbg_str(" BAR2=");
+    dbg_hex32(dev.bar2);
+    dbg_str(" BAR3=");
+    dbg_hex32(dev.bar3);
+    dbg_str(" BAR4=");
+    dbg_hex32(dev.bar4);
+    dbg_str(" BAR5=");
+    dbg_hex32(dev.bar5);
+    dbg_char('\n');
+
+    for (uint8_t i = 0; i < 6; i++) {
+        uint32_t bar = pci_dev_bar(&dev, i);
+        if (bar == 0 || bar == 0xFFFFFFFFu) continue;
+        if (bar & 0x1) {
+            uint16_t base = (uint16_t)(bar & ~0x3u);
+            if (base != 0) {
+                io_base = base;
+                break;
+            }
+        }
+    }
+
+    // Prefer legacy I/O transport when exposed.
+    if (io_base != 0) {
+        g_use_io = 1;
+        g_io_base = io_base;
+        dbg_str("[virtio-gpu] IO base=");
+        dbg_hex32(g_io_base);
+        dbg_char('\n');
+        if (!virtio_gpu_transport_init_legacy()) {
+            return;
+        }
+        dbg_str("[virtio-gpu] transport=legacy\n");
+    } else {
+        if (!virtio_pci_find_modern_caps(&dev)) {
+            dbg_str("[virtio-gpu] modern caps not found\n");
+            return;
+        }
+        if (!virtio_gpu_transport_init_modern()) {
+            return;
+        }
+        dbg_str("[virtio-gpu] transport=modern\n");
+    }
 
     if (!virtio_gpu_probe_display_info()) {
         dbg_str("[virtio-gpu] command path not ready yet\n");
+        return;
     }
 
     if (!virtio_gpu_setup_boot_framebuffer()) {
         dbg_str("[virtio-gpu] boot framebuffer setup failed\n");
+        return;
     }
 
     g_ready = 1;
-    dbg_str("[virtio-gpu] ready (legacy init)\n");
+    dbg_str("[virtio-gpu] ready\n");
 }
 
 int virtio_gpu_ready(void) {

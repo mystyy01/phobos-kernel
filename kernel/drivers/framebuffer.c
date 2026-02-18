@@ -1,4 +1,5 @@
 #include "framebuffer.h"
+#include "virtio_gpu.h"
 static uint8_t *fb;
 static uint16_t width;
 static uint16_t height;
@@ -54,6 +55,11 @@ uint64_t fb_base_addr(void){
 }
 void fb_present_buffer(const void *src, uint64_t size){
     if (!fb || !src || size == 0) return;
+    if (virtio_gpu_ready()) {
+        if (virtio_gpu_present_full(src, (uint32_t)width, (uint32_t)height, (uint32_t)bpp)) {
+            return;
+        }
+    }
     uint64_t qwords = size / 8;
     const void *s = src;
     void *d = (void *)fb;
@@ -75,6 +81,11 @@ void fb_present_buffer(const void *src, uint64_t size){
 void fb_present_buffer_rect(const void *src, int x, int y, int w, int h){
     if (!fb || !src) return;
     if (w <= 0 || h <= 0) return;
+    if (virtio_gpu_ready()) {
+        if (virtio_gpu_present_rect(src, (uint32_t)width, (uint32_t)height, (uint32_t)bpp, x, y, w, h)) {
+            return;
+        }
+    }
 
     int cx = x;
     int cy = y;
