@@ -682,7 +682,9 @@ void uhci_init(void) {
         dbg_hex8((uint8_t)mouse_low_speed);
         dbg_char('\n');
         setup_mouse_polling();
+        mouse_set_ps2_enabled(0);
     } else {
+        mouse_set_ps2_enabled(1);
         dbg_str("UHCI: no mouse found");
         uint16_t p1 = uhci_read16(UHCI_PORTSC1);
         uint16_t p2 = uhci_read16(UHCI_PORTSC2);
@@ -694,41 +696,16 @@ void uhci_init(void) {
     }
 }
 
-static uint32_t poll_count = 0;
-static uint32_t complete_count = 0;
-static uint32_t err_count = 0;
-static uint32_t data_count = 0;
-
 void uhci_poll(void) {
     if (!uhci_active || !mouse_found || !mouse_td) return;
 
-    poll_count++;
-
     uint32_t status = mouse_td->ctrl_status;
-
-    /* Dump stats every ~256 polls */
-    if ((poll_count & 0xFF) == 0) {
-        dbg_str("UHCI poll=0x");
-        dbg_hex32(poll_count);
-        dbg_str(" cmp=0x");
-        dbg_hex32(complete_count);
-        dbg_str(" err=0x");
-        dbg_hex32(err_count);
-        dbg_str(" dat=0x");
-        dbg_hex32(data_count);
-        dbg_str(" st=0x");
-        dbg_hex32(status);
-        dbg_char('\n');
-    }
 
     /* Still active — nothing to do */
     if (status & TD_STATUS_ACTIVE) return;
 
-    complete_count++;
-
     /* Check for errors */
     if (status & TD_STATUS_ANY_ERR) {
-        err_count++;
         dbg_str("UHCI ERR st=0x");
         dbg_hex32(status);
         dbg_char('\n');
@@ -744,62 +721,30 @@ void uhci_poll(void) {
 
     /* Completed — extract actual length (ActLen field is n-1, 0x7FF = zero) */
     int actual_len = (int)((status + 1) & 0x7FF);
-    int got_data = 0;
+    int toggled = 0;
 
     if (hid_type == HID_TYPE_TABLET && actual_len >= 6) {
         /* USB tablet: byte0=buttons, byte1-2=X(LE), byte3-4=Y(LE), byte5=wheel */
-        data_count++;
-        got_data = 1;
+        toggled = 1;
         uint8_t buttons = mouse_buf[0] & 0x07;
         int abs_x = (int)(mouse_buf[1] | (mouse_buf[2] << 8));
         int abs_y = (int)(mouse_buf[3] | (mouse_buf[4] << 8));
 
-        dbg_str("TABLET x=0x");
-        dbg_hex16((uint16_t)abs_x);
-        dbg_str(" y=0x");
-        dbg_hex16((uint16_t)abs_y);
-        dbg_str(" btn=0x");
-        dbg_hex8(buttons);
-        dbg_char('\n');
-
         mouse_update_absolute(abs_x, abs_y, 32767, 32767, buttons);
     } else if (hid_type == HID_TYPE_MOUSE && actual_len >= 3) {
         /* Boot protocol mouse: byte0=buttons, byte1=dx, byte2=dy */
-        data_count++;
-        got_data = 1;
+        toggled = 1;
         uint8_t buttons = mouse_buf[0] & 0x07;
         int8_t dx = (int8_t)mouse_buf[1];
         int8_t dy = (int8_t)mouse_buf[2];
 
-        dbg_str("MOUSE dx=0x");
-        dbg_hex8((uint8_t)dx);
-        dbg_str(" dy=0x");
-        dbg_hex8((uint8_t)dy);
-        dbg_str(" btn=0x");
-        dbg_hex8(buttons);
-        dbg_char('\n');
-
         mouse_update_relative((int)dx, (int)dy, buttons);
     } else if (actual_len > 0) {
-        /* Unknown report — dump raw bytes for debugging */
-        data_count++;
-        got_data = 1;
-        dbg_str("RAW len=");
-        dbg_hex8((uint8_t)actual_len);
-        dbg_str(" :");
-        for (int i = 0; i < actual_len && i < 8; i++) {
-            dbg_char(' ');
-            dbg_hex8(mouse_buf[i]);
-        }
-        dbg_char('\n');
+        toggled = 1;
     }
 
-    if (got_data) {
+    if (toggled) {
         mouse_data_toggle ^= 1;
-    } else if ((complete_count & 0xFF) == 1) {
-        dbg_str("UHCI NAK st=0x");
-        dbg_hex32(status);
-        dbg_char('\n');
     }
 
     /* Resubmit TD for next poll */

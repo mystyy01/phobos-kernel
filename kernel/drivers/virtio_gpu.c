@@ -1,5 +1,6 @@
 #include "virtio_gpu.h"
 #include "pci.h"
+#include "framebuffer.h"
 #include "../paging.h"
 #include "../pmm.h"
 #include <stdint.h>
@@ -183,6 +184,9 @@ static volatile struct virtio_pci_common_cfg *g_modern_common = 0;
 static volatile uint8_t *g_modern_notify_base = 0;
 static uint32_t g_modern_notify_mult = 0;
 static volatile uint8_t *g_modern_isr = 0;
+static uint32_t g_modern_common_len = 0;
+static uint32_t g_modern_notify_len = 0;
+static uint32_t g_modern_isr_len = 0;
 static struct virtio_queue g_ctrlq;
 static struct virtio_queue g_cursorq;
 static struct virtio_gpu_ctrl_hdr g_req_hdr __attribute__((aligned(16)));
@@ -325,6 +329,15 @@ static int map_mmio_identity(uint64_t phys, uint64_t size) {
     return 1;
 }
 
+static void map_range_identity_into(uint64_t *pml4, uint64_t base, uint64_t size) {
+    if (!pml4 || base == 0 || size == 0) return;
+    uint64_t start = base & ~0xFFFULL;
+    uint64_t end = align_up_u64(base + size, 0x1000);
+    for (uint64_t p = start; p < end; p += 0x1000) {
+        paging_map_kernel_page(pml4, p, p, PAGE_PRESENT | PAGE_WRITABLE);
+    }
+}
+
 static int virtio_pci_find_modern_caps(const struct pci_device *dev) {
     if (!dev) return 0;
 
@@ -355,11 +368,14 @@ static int virtio_pci_find_modern_caps(const struct pci_device *dev) {
 
                 if (cfg_type == VIRTIO_PCI_CAP_COMMON_CFG) {
                     g_modern_common = (volatile struct virtio_pci_common_cfg *)(uintptr_t)phys;
+                    g_modern_common_len = len;
                 } else if (cfg_type == VIRTIO_PCI_CAP_NOTIFY_CFG) {
                     g_modern_notify_base = (volatile uint8_t *)(uintptr_t)phys;
                     g_modern_notify_mult = pci_config_read32(dev->bus, dev->slot, dev->func, cap_ptr + 16);
+                    g_modern_notify_len = len;
                 } else if (cfg_type == VIRTIO_PCI_CAP_ISR_CFG) {
                     g_modern_isr = (volatile uint8_t *)(uintptr_t)phys;
+                    g_modern_isr_len = len;
                 }
             }
         }
@@ -625,19 +641,6 @@ static int virtio_gpu_probe_display_info(void) {
     return 0;
 }
 
-static void virtio_gpu_fill_test_pattern(uint8_t *buf, uint32_t width, uint32_t height) {
-    if (!buf || width == 0 || height == 0) return;
-    uint32_t *pix = (uint32_t *)buf;
-    for (uint32_t y = 0; y < height; y++) {
-        for (uint32_t x = 0; x < width; x++) {
-            uint32_t r = (x * 255U) / (width ? width : 1);
-            uint32_t g = (y * 255U) / (height ? height : 1);
-            uint32_t b = ((x ^ y) & 0xFFU);
-            pix[y * width + x] = (r << 16) | (g << 8) | b;
-        }
-    }
-}
-
 static int virtio_gpu_create_2d_resource(uint32_t resource_id, uint32_t width, uint32_t height) {
     struct virtio_gpu_resource_create_2d req;
     struct virtio_gpu_ctrl_hdr resp;
@@ -756,13 +759,15 @@ static int virtio_gpu_setup_boot_framebuffer(void) {
     g_resource_backing = backing;
     g_resource_backing_bytes = (uint64_t)pages * 4096ULL;
     mem_zero(g_resource_backing, g_resource_backing_bytes);
-    virtio_gpu_fill_test_pattern(g_resource_backing, g_scanout_w, g_scanout_h);
 
     if (!virtio_gpu_create_2d_resource(g_resource_id, g_scanout_w, g_scanout_h)) return 0;
     if (!virtio_gpu_attach_backing(g_resource_id, g_resource_backing, (uint32_t)bytes)) return 0;
     if (!virtio_gpu_set_scanout(g_scanout_id, g_resource_id, g_scanout_w, g_scanout_h)) return 0;
     if (!virtio_gpu_transfer_to_host(g_resource_id, 0, 0, g_scanout_w, g_scanout_h)) return 0;
     if (!virtio_gpu_flush_resource(g_resource_id, 0, 0, g_scanout_w, g_scanout_h)) return 0;
+
+    // Route generic framebuffer drawing (console/shell) to the virtio backing surface.
+    fb_set_surface(g_resource_backing, (uint16_t)g_scanout_w, (uint16_t)g_scanout_h, 32);
 
     dbg_str("[virtio-gpu] boot frame submitted\n");
     return 1;
@@ -980,4 +985,38 @@ void virtio_gpu_init(void) {
 
 int virtio_gpu_ready(void) {
     return g_ready;
+}
+
+void virtio_gpu_map_for_task(uint64_t *task_pml4) {
+    if (!task_pml4) return;
+
+    map_range_identity_into(task_pml4, (uint64_t)(uintptr_t)&g_req_hdr, sizeof(g_req_hdr));
+    map_range_identity_into(task_pml4, (uint64_t)(uintptr_t)&g_disp_info, sizeof(g_disp_info));
+
+    if (g_ctrlq.mem && g_ctrlq.bytes) {
+        map_range_identity_into(task_pml4, (uint64_t)(uintptr_t)g_ctrlq.mem, g_ctrlq.bytes);
+    }
+    if (g_cursorq.mem && g_cursorq.bytes) {
+        map_range_identity_into(task_pml4, (uint64_t)(uintptr_t)g_cursorq.mem, g_cursorq.bytes);
+    }
+    if (g_resource_backing && g_resource_backing_bytes) {
+        map_range_identity_into(task_pml4, (uint64_t)(uintptr_t)g_resource_backing, g_resource_backing_bytes);
+    }
+
+    if (g_transport_modern) {
+        if (g_modern_common) {
+            uint64_t size = g_modern_common_len ? g_modern_common_len : 0x1000;
+            map_range_identity_into(task_pml4, (uint64_t)(uintptr_t)g_modern_common, size);
+        }
+        if (g_modern_notify_base) {
+            uint64_t size = g_modern_notify_len ? g_modern_notify_len : 0x1000;
+            map_range_identity_into(task_pml4, (uint64_t)(uintptr_t)g_modern_notify_base, size);
+        }
+        if (g_modern_isr) {
+            uint64_t size = g_modern_isr_len ? g_modern_isr_len : 0x1000;
+            map_range_identity_into(task_pml4, (uint64_t)(uintptr_t)g_modern_isr, size);
+        }
+    } else if (!g_use_io && g_mmio) {
+        map_range_identity_into(task_pml4, (uint64_t)(uintptr_t)g_mmio, 0x1000);
+    }
 }

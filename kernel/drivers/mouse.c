@@ -9,6 +9,7 @@ static volatile int mouse_write_idx = 0;
 
 static uint8_t packet[3];
 static int packet_idx = 0;
+static int ps2_enabled = 1;
 
 static int mouse_x = 0;
 static int mouse_y = 0;
@@ -71,6 +72,7 @@ void mouse_init(void) {
     mouse_write_idx = 0;
     packet_idx = 0;
     mouse_buttons = 0;
+    ps2_enabled = 1;
 
     int w = fb_width();
     int h = fb_height();
@@ -202,6 +204,10 @@ void mouse_update_absolute(int abs_x, int abs_y, int abs_max_x, int abs_max_y, u
 }
 
 void mouse_handle_byte(uint8_t data_byte) {
+    if (!ps2_enabled) {
+        return;
+    }
+
     if (packet_idx == 0 && (data_byte & 0x08) == 0) {
         return; // out-of-sync; wait for a valid first byte
     }
@@ -244,4 +250,9 @@ int mouse_get_y(void) {
 
 uint8_t mouse_get_buttons(void) {
     return mouse_buttons;
+}
+
+void mouse_set_ps2_enabled(int enabled) {
+    ps2_enabled = enabled ? 1 : 0;
+    packet_idx = 0;
 }

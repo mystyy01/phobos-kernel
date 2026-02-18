@@ -10,6 +10,16 @@ void fb_init(void){
     height = *(uint16_t *)0x5014;
     bpp = *(uint8_t *)0x5019;
 }
+
+void fb_set_surface(void *base, uint16_t new_width, uint16_t new_height, uint8_t new_bpp){
+    if (!base || new_width == 0 || new_height == 0) return;
+    if (new_bpp != 16 && new_bpp != 24 && new_bpp != 32) return;
+    fb = (uint8_t *)base;
+    width = new_width;
+    height = new_height;
+    bpp = new_bpp;
+}
+
 void fb_putpixel(int x, int y, uint32_t colour){
     if (!fb || width == 0 || height == 0) {
         return;
@@ -60,6 +70,7 @@ void fb_present_buffer(const void *src, uint64_t size){
             return;
         }
     }
+    if (src == (const void *)fb) return;
     uint64_t qwords = size / 8;
     const void *s = src;
     void *d = (void *)fb;
@@ -86,6 +97,7 @@ void fb_present_buffer_rect(const void *src, int x, int y, int w, int h){
             return;
         }
     }
+    if (src == (const void *)fb) return;
 
     int cx = x;
     int cy = y;

@@ -23,5 +23,6 @@ int mouse_poll_event(struct mouse_event *out);
 int mouse_get_x(void);
 int mouse_get_y(void);
 uint8_t mouse_get_buttons(void);
+void mouse_set_ps2_enabled(int enabled);
 
 #endif

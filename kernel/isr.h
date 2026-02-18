@@ -19,7 +19,7 @@ struct irq_frame_user {
     uint64_t ss;
 };
 
-void isr_handler(uint64_t int_no);
+void isr_handler(uint64_t int_no, struct irq_frame *frame);
 struct irq_frame *irq_handler(uint64_t int_no, struct irq_frame *frame);
 
 #endif

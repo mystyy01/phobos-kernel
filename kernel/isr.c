@@ -29,6 +29,21 @@ static void print_hex(uint64_t n, int x, int y) {
     print_at(hex, x, y, 0x0F);
 }
 
+static inline void dbg_out(uint8_t v) {
+    __asm__ volatile ("outb %0, %1" : : "a"(v), "Nd"((uint16_t)0xE9));
+}
+
+static void dbg_str(const char *s) {
+    while (*s) dbg_out((uint8_t)*s++);
+}
+
+static void dbg_hex64(uint64_t v) {
+    const char *hex = "0123456789ABCDEF";
+    for (int i = 15; i >= 0; i--) {
+        dbg_out((uint8_t)hex[(v >> (i * 4)) & 0xF]);
+    }
+}
+
 static const char *exception_names[] = {
     "Division by Zero",
     "Debug",
@@ -57,10 +72,28 @@ static const char *exception_names[] = {
     "Reserved", "Reserved"
 };
 
-void isr_handler(uint64_t int_no) {
+void isr_handler(uint64_t int_no, struct irq_frame *frame) {
     // If a user task faulted, kill it instead of halting the whole system.
     struct task *t = sched_current();
     if (t && t->is_user) {
+        dbg_str("[isr] user fault int=");
+        dbg_hex64(int_no);
+        if (frame) {
+            dbg_str(" rip=");
+            dbg_hex64(frame->rip);
+            dbg_str(" err=");
+            dbg_hex64(frame->err_code);
+        }
+        dbg_str(" pid=");
+        dbg_hex64(t->id);
+        if (int_no == 14) {
+            uint64_t cr2;
+            __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
+            dbg_str(" cr2=");
+            dbg_hex64(cr2);
+        }
+        dbg_str("\n");
+
         // Print info to VGA for debugging
         print_at("USER FAULT: ", 0, 5, 0x0C);
         if (int_no < 32) {

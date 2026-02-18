@@ -604,21 +604,23 @@ uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
             if (size == 0) return 0;
 
             uint64_t pages = (size + 0xFFF) / 0x1000;
-            uint64_t vaddr = 0x2000000ULL; // Fixed backbuffer base
+            uint64_t vaddr = 0x50000000ULL; // Fixed user backbuffer base (no low-VA overlap)
 
             for (uint64_t i = 0; i < pages; i++) {
                 void *page = pmm_alloc_page();
                 if (!page) return 0;
-                paging_map_user_page((uint64_t *)t->cr3,
-                                     vaddr + i * 0x1000,
-                                     (uint64_t)page,
-                                     PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
-            }
+                // Zero physically first; avoids touching potentially-unmapped
+                // user virtual addresses during syscall execution.
+                uint64_t *pz = (uint64_t *)page;
+                for (uint64_t q = 0; q < (4096 / 8); q++) pz[q] = 0;
 
-            // Zero through the now-mapped virtual address (safe with any CR3)
-            uint64_t *vp = (uint64_t *)vaddr;
-            uint64_t qwords = size / 8;
-            for (uint64_t i = 0; i < qwords; i++) vp[i] = 0;
+                if (paging_map_user_page((uint64_t *)t->cr3,
+                                         vaddr + i * 0x1000,
+                                         (uint64_t)page,
+                                         PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER) < 0) {
+                    return 0;
+                }
+            }
 
             return vaddr;
         }

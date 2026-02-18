@@ -92,8 +92,9 @@ isr_common:
     push r14
     push r15
 
-    ; Call C handler with interrupt number as argument
+    ; Call C handler with interrupt number and frame pointer
     mov rdi, [rsp + 120]  ; Get interrupt number (15 regs * 8 = 120)
+    mov rsi, rsp
     call isr_handler
 
     ; Restore all registers

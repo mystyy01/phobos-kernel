@@ -11,6 +11,16 @@ static int cursor_row = 0;
 static int cursor_col = 0;
 static char console_chars[CONSOLE_ROWS][CONSOLE_COLS];
 
+static void present_rect(int x, int y, int w, int h) {
+    const void *src = (const void *)(uintptr_t)fb_base_addr();
+    if (!src) return;
+    fb_present_buffer_rect(src, x, y, w, h);
+}
+
+static void present_console(void) {
+    present_rect(0, 0, CONSOLE_COLS * default_font.width, CONSOLE_ROWS * default_font.height);
+}
+
 static void fill_rect(int x, int y, int w, int h, uint32_t colour) {
     for (int yy = 0; yy < h; yy++) {
         for (int xx = 0; xx < w; xx++) {
@@ -45,6 +55,7 @@ static void scroll_up(void) {
         console_chars[CONSOLE_ROWS - 1][col] = ' ';
     }
     redraw_all();
+    present_console();
     cursor_row = CONSOLE_ROWS - 1;
 }
 
@@ -59,6 +70,7 @@ void console_clear(void) {
         }
     }
     fill_rect(0, 0, CONSOLE_COLS * default_font.width, CONSOLE_ROWS * default_font.height, CONSOLE_BG);
+    present_console();
     cursor_row = 0;
     cursor_col = 0;
 }
@@ -74,12 +86,16 @@ void console_putc(int c) {
             cursor_col--;
             console_chars[cursor_row][cursor_col] = ' ';
             draw_cell(cursor_row, cursor_col, ' ');
+            present_rect(cursor_col * default_font.width, cursor_row * default_font.height,
+                         default_font.width, default_font.height);
         }
     } else if (c == '\t') {
         int next = (cursor_col + 8) & ~7;
         while (cursor_col < next) {
             console_chars[cursor_row][cursor_col] = ' ';
             draw_cell(cursor_row, cursor_col, ' ');
+            present_rect(cursor_col * default_font.width, cursor_row * default_font.height,
+                         default_font.width, default_font.height);
             cursor_col++;
             if (cursor_col >= CONSOLE_COLS) {
                 cursor_col = 0;
@@ -93,6 +109,8 @@ void console_putc(int c) {
         }
         console_chars[cursor_row][cursor_col] = (char)c;
         draw_cell(cursor_row, cursor_col, (char)c);
+        present_rect(cursor_col * default_font.width, cursor_row * default_font.height,
+                     default_font.width, default_font.height);
         cursor_col++;
     }
 

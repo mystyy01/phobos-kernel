@@ -7,6 +7,7 @@
 #include "gdt.h"
 #include "syscall.h"
 #include "drivers/framebuffer.h"
+#include "drivers/virtio_gpu.h"
 
 #define MAX_TASKS 16
 #define MAX_PIPES 16
@@ -444,7 +445,7 @@ int sched_spawn(const char *path, char **args, struct fd_entry *fd_overrides) {
     // Map the VESA framebuffer into the user's address space (supervisor-only)
     // so that kernel syscall handlers (e.g. SYS_FB_PUTPIXEL) can access it
     // while running with the user's CR3.
-    {
+    if (!virtio_gpu_ready()) {
         uint64_t fba = fb_base_addr();
         if (fba) {
             uint64_t bpp = (uint64_t)fb_bpp();
@@ -457,6 +458,10 @@ int sched_spawn(const char *path, char **args, struct fd_entry *fd_overrides) {
             }
         }
     }
+
+    // Syscall-side GPU present touches virtio MMIO + queue memory while
+    // running on the task CR3; map those pages supervisor-only.
+    virtio_gpu_map_for_task(user_pml4);
 
     // Allocate kernel stack (identity-mapped, supervisor-only)
     int idx = task_index(t);

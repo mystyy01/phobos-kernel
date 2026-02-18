@@ -2,10 +2,10 @@
 #include "pmm.h"
 
 // Fresh 4 KiB page tables built in kernel .bss so we fully control them.
-// Identity-map the first 2 MiB with 4 KiB pages.
+// Identity-map the first 64 MiB with 4 KiB pages.
 
 #define PT_ENTRIES 512
-#define NUM_PT 8  // map first 16 MiB
+#define NUM_PT 32  // map first 64 MiB
 
 uint64_t pml4[PT_ENTRIES] __attribute__((aligned(4096)));  // Non-static for debug
 uint64_t pdpt[PT_ENTRIES] __attribute__((aligned(4096)));  // Non-static for debug
@@ -41,7 +41,7 @@ void paging_init(void) {
         pd[p] = ((uint64_t)pt[p]) | flags_user;
     }
 
-    // Map first 2 MiB with 4 KiB pages
+    // Map first 64 MiB with 4 KiB pages
     // Below 1MB is supervisor-only (kernel), above 1MB is user-accessible
     for (int p = 0; p < NUM_PT; p++) {
         for (int i = 0; i < PT_ENTRIES; i++) {
