@@ -61,6 +61,88 @@ static int strcmp_local(const char *a, const char *b) {
     return *a - *b;
 }
 
+static char ascii_tolower(char c) {
+    if (c >= 'A' && c <= 'Z') return (char)(c + 32);
+    return c;
+}
+
+static int str_case_eq_ascii(const char *a, const char *b) {
+    if (!a || !b) return 0;
+    while (*a && *b) {
+        if (ascii_tolower(*a) != ascii_tolower(*b)) return 0;
+        a++;
+        b++;
+    }
+    return *a == *b;
+}
+
+struct fat32_lfn_entry {
+    uint8_t order;
+    uint16_t name1[5];
+    uint8_t attr;
+    uint8_t type;
+    uint8_t checksum;
+    uint16_t name2[6];
+    uint16_t first_cluster_low;
+    uint16_t name3[2];
+} __attribute__((packed));
+
+struct fat32_lfn_state {
+    int active;
+    char name[VFS_MAX_NAME];
+};
+
+static void fat32_lfn_reset(struct fat32_lfn_state *state) {
+    if (!state) return;
+    state->active = 0;
+    state->name[0] = '\0';
+}
+
+static char fat32_lfn_char_to_ascii(uint16_t ch) {
+    if (ch <= 0x7F) return (char)ch;
+    return '?';
+}
+
+static void fat32_lfn_write_char(char *dst, int dst_len, int pos, uint16_t ch) {
+    if (!dst || dst_len <= 1 || pos < 0 || pos >= dst_len - 1) return;
+
+    if (ch == 0x0000 || ch == 0xFFFF) {
+        dst[pos] = '\0';
+        return;
+    }
+
+    dst[pos] = fat32_lfn_char_to_ascii(ch);
+}
+
+static void fat32_lfn_accumulate(struct fat32_lfn_state *state,
+                                 const struct fat32_lfn_entry *lfn) {
+    if (!state || !lfn) return;
+
+    uint8_t order_raw = lfn->order;
+    int order = order_raw & 0x1F;
+    if (order <= 0) {
+        fat32_lfn_reset(state);
+        return;
+    }
+
+    if ((order_raw & 0x40) || !state->active) {
+        memset(state->name, 0, VFS_MAX_NAME);
+        state->active = 1;
+    }
+
+    int base = (order - 1) * 13;
+    for (int i = 0; i < 5; i++) {
+        fat32_lfn_write_char(state->name, VFS_MAX_NAME, base + i, lfn->name1[i]);
+    }
+    for (int i = 0; i < 6; i++) {
+        fat32_lfn_write_char(state->name, VFS_MAX_NAME, base + 5 + i, lfn->name2[i]);
+    }
+    for (int i = 0; i < 2; i++) {
+        fat32_lfn_write_char(state->name, VFS_MAX_NAME, base + 11 + i, lfn->name3[i]);
+    }
+    state->name[VFS_MAX_NAME - 1] = '\0';
+}
+
 static int is_special_name(const char *name) {
     if (name[0] == '.' && name[1] == '\0') return 1;
     if (name[0] == '.' && name[1] == '.' && name[2] == '\0') return 1;
@@ -802,6 +884,8 @@ static struct dirent *fat32_readdir(struct vfs_node *node, uint32_t index) {
 
     uint32_t cluster = node->inode;
     uint32_t entry_index = 0;
+    struct fat32_lfn_state lfn_state;
+    fat32_lfn_reset(&lfn_state);
 
     while (!is_end_of_chain(cluster)) {
         read_cluster(cluster, cluster_buffer);
@@ -816,24 +900,45 @@ static struct dirent *fat32_readdir(struct vfs_node *node, uint32_t index) {
             if (entry->name[0] == 0x00) return 0;
 
             // Skip deleted entries
-            if (entry->name[0] == 0xE5) continue;
+            if (entry->name[0] == 0xE5) {
+                fat32_lfn_reset(&lfn_state);
+                continue;
+            }
 
-            // Skip LFN entries
-            if ((entry->attr & FAT32_ATTR_LFN) == FAT32_ATTR_LFN) continue;
+            if ((entry->attr & FAT32_ATTR_LFN) == FAT32_ATTR_LFN) {
+                fat32_lfn_accumulate(&lfn_state, (const struct fat32_lfn_entry *)entry);
+                continue;
+            }
 
             // Skip volume label
-            if (entry->attr & FAT32_ATTR_VOLUME_ID) continue;
+            if (entry->attr & FAT32_ATTR_VOLUME_ID) {
+                fat32_lfn_reset(&lfn_state);
+                continue;
+            }
 
             // Skip . and ..
-            if (entry->name[0] == '.') continue;
+            if (entry->name[0] == '.') {
+                fat32_lfn_reset(&lfn_state);
+                continue;
+            }
 
             if (entry_index == index) {
-                fat32_name_to_string(entry->name, dirent_buf.name);
+                if (lfn_state.active && lfn_state.name[0]) {
+                    int j = 0;
+                    while (lfn_state.name[j] && j < VFS_MAX_NAME - 1) {
+                        dirent_buf.name[j] = lfn_state.name[j];
+                        j++;
+                    }
+                    dirent_buf.name[j] = '\0';
+                } else {
+                    fat32_name_to_string(entry->name, dirent_buf.name);
+                }
                 dirent_buf.inode = (entry->first_cluster_high << 16) | entry->first_cluster_low;
                 return &dirent_buf;
             }
 
             entry_index++;
+            fat32_lfn_reset(&lfn_state);
         }
 
         cluster = get_next_cluster(cluster);
@@ -850,6 +955,8 @@ static struct vfs_node *fat32_finddir(struct vfs_node *node, const char *name) {
     string_to_fat32_name(name, fat_name);
 
     uint32_t cluster = node->inode;
+    struct fat32_lfn_state lfn_state;
+    fat32_lfn_reset(&lfn_state);
 
     while (!is_end_of_chain(cluster)) {
         read_cluster(cluster, cluster_buffer);
@@ -864,22 +971,38 @@ static struct vfs_node *fat32_finddir(struct vfs_node *node, const char *name) {
             if (entry->name[0] == 0x00) return 0;
 
             // Skip deleted entries
-            if (entry->name[0] == 0xE5) continue;
+            if (entry->name[0] == 0xE5) {
+                fat32_lfn_reset(&lfn_state);
+                continue;
+            }
 
-            // Skip LFN entries
-            if ((entry->attr & FAT32_ATTR_LFN) == FAT32_ATTR_LFN) continue;
+            if ((entry->attr & FAT32_ATTR_LFN) == FAT32_ATTR_LFN) {
+                fat32_lfn_accumulate(&lfn_state, (const struct fat32_lfn_entry *)entry);
+                continue;
+            }
 
             // Skip volume label
-            if (entry->attr & FAT32_ATTR_VOLUME_ID) continue;
+            if (entry->attr & FAT32_ATTR_VOLUME_ID) {
+                fat32_lfn_reset(&lfn_state);
+                continue;
+            }
 
-            // Check name match
-            if (strncmp((char *)entry->name, (char *)fat_name, 11) == 0) {
+            int name_match = 0;
+            if (lfn_state.active && lfn_state.name[0] && str_case_eq_ascii(lfn_state.name, name)) {
+                name_match = 1;
+            } else if (strncmp((char *)entry->name, (char *)fat_name, 11) == 0) {
+                name_match = 1;
+            }
+
+            if (name_match) {
                 struct vfs_node *child = create_node(entry);
                 if (child) {
                     child->private_data = (void *)(uintptr_t)node->inode;
                 }
                 return child;
             }
+
+            fat32_lfn_reset(&lfn_state);
         }
 
         cluster = get_next_cluster(cluster);

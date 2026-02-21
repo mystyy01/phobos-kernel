@@ -1,0 +1,278 @@
+// PHOBOS Userspace libdeimos (MVP)
+// Header-only graphics/input helper built on libsys ABI.
+
+#ifndef LIBDEIMOS_H
+#define LIBDEIMOS_H
+
+#include <stdint.h>
+#include "libsys.h"
+
+#define DM_EVENT_NONE          0
+#define DM_EVENT_KEYBOARD      INPUT_EVENT_KEYBOARD
+#define DM_EVENT_MOUSE_MOVE    INPUT_EVENT_MOUSE_MOVE
+#define DM_EVENT_MOUSE_BUTTON  INPUT_EVENT_MOUSE_BUTTON
+
+#define DM_MOUSE_LEFT   0x01
+#define DM_MOUSE_RIGHT  0x02
+#define DM_MOUSE_MIDDLE 0x04
+
+typedef struct dm_app {
+    uint32_t *pixels;
+    int width;
+    int height;
+    int bpp;
+    int pitch;
+    int stride_pixels;
+} dm_app;
+
+typedef struct dm_event {
+    uint8_t type;
+    uint8_t key;
+    uint8_t modifiers;
+    uint8_t pressed;
+    uint8_t scancode;
+    uint8_t mouse_buttons;
+    int16_t mouse_x;
+    int16_t mouse_y;
+} dm_event;
+
+typedef struct dm_rect {
+    int x;
+    int y;
+    int w;
+    int h;
+} dm_rect;
+
+static inline uint32_t dm_rgb(uint8_t r, uint8_t g, uint8_t b) {
+    return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+}
+
+static inline uint32_t dm_rgba(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+    (void)a;
+    return dm_rgb(r, g, b);
+}
+
+static inline int dm_init(dm_app *app) {
+    struct user_fb_info info;
+    long map_addr;
+
+    if (!app) return -1;
+
+    if (fb_info(&info) != 0) return -1;
+    if (info.width == 0 || info.height == 0) return -1;
+    if (info.bpp != 32) return -1;
+    if (info.pitch < info.width * 4) return -1;
+
+    map_addr = fb_map();
+    if (map_addr <= 0) return -1;
+
+    app->pixels = (uint32_t *)(uintptr_t)map_addr;
+    app->width = (int)info.width;
+    app->height = (int)info.height;
+    app->bpp = (int)info.bpp;
+    app->pitch = (int)info.pitch;
+    app->stride_pixels = (int)(info.pitch / 4);
+    return 0;
+}
+
+static inline int dm_present(dm_app *app) {
+    if (!app || !app->pixels) return -1;
+    return fb_present((void *)app->pixels);
+}
+
+static inline int dm_present_rect(dm_app *app, int x, int y, int w, int h) {
+    if (!app || !app->pixels) return -1;
+    return fb_present_rect((void *)app->pixels, x, y, w, h);
+}
+
+static inline int dm_poll_event(dm_event *out) {
+    struct user_input_event raw;
+    int r;
+
+    if (!out) return -1;
+
+    r = input_poll(&raw);
+    if (r <= 0) return r;
+
+    out->type = raw.type;
+    out->key = raw.key;
+    out->modifiers = raw.modifiers;
+    out->pressed = raw.pressed;
+    out->scancode = raw.scancode;
+    out->mouse_buttons = raw.mouse_buttons;
+    out->mouse_x = raw.mouse_x;
+    out->mouse_y = raw.mouse_y;
+    return 1;
+}
+
+static inline int dm_in_bounds(dm_app *app, int x, int y) {
+    if (!app) return 0;
+    if ((unsigned)x >= (unsigned)app->width) return 0;
+    if ((unsigned)y >= (unsigned)app->height) return 0;
+    return 1;
+}
+
+static inline void dm_put_pixel(dm_app *app, int x, int y, uint32_t color) {
+    if (!dm_in_bounds(app, x, y)) return;
+    app->pixels[(y * app->stride_pixels) + x] = color;
+}
+
+static inline void dm_clear(dm_app *app, uint32_t color) {
+    int y, x;
+    if (!app || !app->pixels) return;
+    for (y = 0; y < app->height; y++) {
+        uint32_t *row = app->pixels + (y * app->stride_pixels);
+        for (x = 0; x < app->width; x++) {
+            row[x] = color;
+        }
+    }
+}
+
+static inline int dm_clip_rect(dm_app *app, int *x, int *y, int *w, int *h) {
+    int x0, y0, x1, y1;
+
+    if (!app || !x || !y || !w || !h) return 0;
+    if (*w <= 0 || *h <= 0) return 0;
+
+    x0 = *x;
+    y0 = *y;
+    x1 = x0 + *w;
+    y1 = y0 + *h;
+
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > app->width) x1 = app->width;
+    if (y1 > app->height) y1 = app->height;
+
+    if (x1 <= x0 || y1 <= y0) return 0;
+
+    *x = x0;
+    *y = y0;
+    *w = x1 - x0;
+    *h = y1 - y0;
+    return 1;
+}
+
+static inline void dm_fill_rect(dm_app *app, int x, int y, int w, int h, uint32_t color) {
+    int yy, xx;
+    if (!dm_clip_rect(app, &x, &y, &w, &h)) return;
+
+    for (yy = 0; yy < h; yy++) {
+        uint32_t *row = app->pixels + ((y + yy) * app->stride_pixels) + x;
+        for (xx = 0; xx < w; xx++) {
+            row[xx] = color;
+        }
+    }
+}
+
+static inline void dm_stroke_rect(dm_app *app, int x, int y, int w, int h, uint32_t color) {
+    int i;
+    if (!app || w <= 0 || h <= 0) return;
+
+    for (i = 0; i < w; i++) {
+        dm_put_pixel(app, x + i, y, color);
+        dm_put_pixel(app, x + i, y + h - 1, color);
+    }
+    for (i = 0; i < h; i++) {
+        dm_put_pixel(app, x, y + i, color);
+        dm_put_pixel(app, x + w - 1, y + i, color);
+    }
+}
+
+static inline void dm_draw_line(dm_app *app, int x0, int y0, int x1, int y1, uint32_t color) {
+    int dx = (x1 > x0) ? (x1 - x0) : (x0 - x1);
+    int sx = (x0 < x1) ? 1 : -1;
+    int dy = (y1 > y0) ? (y0 - y1) : (y1 - y0);
+    int sy = (y0 < y1) ? 1 : -1;
+    int err = dx + dy;
+
+    while (1) {
+        dm_put_pixel(app, x0, y0, color);
+        if (x0 == x1 && y0 == y1) break;
+
+        {
+            int e2 = err << 1;
+            if (e2 >= dy) {
+                err += dy;
+                x0 += sx;
+            }
+            if (e2 <= dx) {
+                err += dx;
+                y0 += sy;
+            }
+        }
+    }
+}
+
+static inline void dm_blit_argb32(dm_app *app,
+                                  const uint32_t *src, int src_stride_pixels,
+                                  int src_x, int src_y,
+                                  int dst_x, int dst_y,
+                                  int w, int h) {
+    int yy, xx;
+    if (!app || !app->pixels || !src) return;
+    if (w <= 0 || h <= 0) return;
+    if (src_stride_pixels <= 0) return;
+
+    for (yy = 0; yy < h; yy++) {
+        int sy = src_y + yy;
+        int dy = dst_y + yy;
+        if ((unsigned)dy >= (unsigned)app->height) continue;
+        for (xx = 0; xx < w; xx++) {
+            int sx = src_x + xx;
+            int dx = dst_x + xx;
+            if ((unsigned)dx >= (unsigned)app->width) continue;
+            app->pixels[(dy * app->stride_pixels) + dx] = src[(sy * src_stride_pixels) + sx];
+        }
+    }
+}
+
+// 5x7 ASCII font (0x20..0x7E), 5 bytes per glyph.
+static const uint8_t dm_font_5x7[] = {
+    0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x5F,0x00,0x00,0x00,0x07,0x00,0x07,0x00,0x14,0x7F,0x14,0x7F,0x14,0x24,0x2A,0x7F,0x2A,0x12,0x23,0x13,0x08,0x64,0x62,0x36,0x49,0x56,0x20,0x50,0x00,0x08,0x07,0x03,0x00,0x00,0x00,0x1C,0x22,0x41,0x00,0x00,0x41,0x22,0x1C,0x00,0x2A,0x1C,0x7F,0x1C,0x2A,0x08,0x08,0x3E,0x08,0x08,0x00,0x80,0x70,0x30,0x00,0x08,0x08,0x08,0x08,0x08,0x00,0x00,0x60,0x60,0x00,0x20,0x10,0x08,0x04,0x02,
+    0x3E,0x51,0x49,0x45,0x3E,0x00,0x42,0x7F,0x40,0x00,0x72,0x49,0x49,0x49,0x46,0x21,0x41,0x49,0x4D,0x33,0x18,0x14,0x12,0x7F,0x10,0x27,0x45,0x45,0x45,0x39,0x3C,0x4A,0x49,0x49,0x31,0x41,0x21,0x11,0x09,0x07,0x36,0x49,0x49,0x49,0x36,0x46,0x49,0x49,0x29,0x1E,0x00,0x00,0x14,0x00,0x00,0x00,0x40,0x34,0x00,0x00,0x00,0x08,0x14,0x22,0x41,0x00,0x14,0x14,0x14,0x14,0x14,0x00,0x41,0x22,0x14,0x08,0x00,0x02,0x01,0x59,0x09,0x06,0x3E,0x41,0x5D,0x59,0x4E,
+    0x7C,0x12,0x11,0x12,0x7C,0x7F,0x49,0x49,0x49,0x36,0x3E,0x41,0x41,0x41,0x22,0x7F,0x41,0x41,0x41,0x3E,0x7F,0x49,0x49,0x49,0x41,0x7F,0x09,0x09,0x09,0x01,0x3E,0x41,0x41,0x51,0x73,0x7F,0x08,0x08,0x08,0x7F,0x00,0x41,0x7F,0x41,0x00,0x20,0x40,0x41,0x3F,0x01,0x7F,0x08,0x14,0x22,0x41,0x7F,0x40,0x40,0x40,0x40,0x7F,0x02,0x1C,0x02,0x7F,0x7F,0x04,0x08,0x10,0x7F,0x3E,0x41,0x41,0x41,0x3E,0x7F,0x09,0x09,0x09,0x06,0x3E,0x41,0x51,0x21,0x5E,0x7F,0x09,0x19,0x29,0x46,0x26,0x49,0x49,0x49,0x32,0x03,0x01,0x7F,0x01,0x03,0x3F,0x40,0x40,0x40,0x3F,0x1F,0x20,0x40,0x20,0x1F,0x3F,0x40,0x38,0x40,0x3F,0x63,0x14,0x08,0x14,0x63,0x03,0x04,0x78,0x04,0x03,0x61,0x59,0x49,0x4D,0x43,
+    0x00,0x7F,0x41,0x41,0x41,0x02,0x04,0x08,0x10,0x20,0x00,0x41,0x41,0x41,0x7F,0x04,0x02,0x01,0x02,0x04,0x40,0x40,0x40,0x40,0x40,0x00,0x03,0x07,0x08,0x00,0x20,0x54,0x54,0x78,0x40,0x7F,0x28,0x44,0x44,0x38,0x38,0x44,0x44,0x44,0x28,0x38,0x44,0x44,0x28,0x7F,0x38,0x54,0x54,0x54,0x18,0x00,0x08,0x7E,0x09,0x02,0x18,0xA4,0xA4,0x9C,0x78,0x7F,0x08,0x04,0x04,0x78,0x00,0x44,0x7D,0x40,0x00,0x20,0x40,0x40,0x3D,0x00,0x7F,0x10,0x28,0x44,0x00,0x00,0x41,0x7F,0x40,0x00,0x7C,0x04,0x78,0x04,0x78,0x7C,0x08,0x04,0x04,0x78,0x38,0x44,0x44,0x44,0x38,0xFC,0x18,0x24,0x24,0x18,0x18,0x24,0x24,0x18,0xFC,0x7C,0x08,0x04,0x04,0x08,0x48,0x54,0x54,0x54,0x24,0x04,0x04,0x3F,0x44,0x24,0x3C,0x40,0x40,0x20,0x7C,0x1C,0x20,0x40,0x20,0x1C,0x3C,0x40,0x30,0x40,0x3C,0x44,0x28,0x10,0x28,0x44,0x4C,0x90,0x90,0x90,0x7C,0x44,0x64,0x54,0x4C,0x44,
+    0x00,0x08,0x36,0x41,0x00,0x00,0x00,0x77,0x00,0x00,0x00,0x41,0x36,0x08,0x00,0x02,0x01,0x02,0x04,0x02
+};
+
+static inline void dm_draw_char(dm_app *app, int x, int y, char ch, uint32_t color) {
+    if (!app || !app->pixels) return;
+    if ((unsigned char)ch < 0x20 || (unsigned char)ch > 0x7E) return;
+
+    int glyph = ((int)ch - 0x20) * 5;
+    for (int col = 0; col < 5; col++) {
+        uint8_t bits = dm_font_5x7[glyph + col];
+        for (int row = 0; row < 7; row++) {
+            if (bits & (1u << row)) {
+                dm_put_pixel(app, x + col, y + row, color);
+            }
+        }
+    }
+}
+
+static inline void dm_draw_text(dm_app *app, int x, int y, const char *text, uint32_t color) {
+    int cx = x;
+    int cy = y;
+    if (!app || !text) return;
+
+    while (*text) {
+        char ch = *text++;
+        if (ch == '\n') {
+            cx = x;
+            cy += 8;
+            continue;
+        }
+        dm_draw_char(app, cx, cy, ch, color);
+        cx += 6;
+    }
+}
+
+static inline int dm_text_width(const char *text) {
+    int w = 0;
+    if (!text) return 0;
+    while (text[w] && text[w] != '\n') w++;
+    return w * 6;
+}
+
+#endif // LIBDEIMOS_H

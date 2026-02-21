@@ -455,10 +455,19 @@ uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
 
         case SYS_EXEC: {
             const char *path = (const char *)arg1;
-            // For now exec is not implemented as a syscall
-            // (shell uses kernel-level sched_spawn instead)
-            (void)path;
-            return -1;
+            char **argv = (char **)arg2;
+            if (!path || !path[0]) return -1;
+
+            char full_path[VFS_MAX_PATH];
+            build_path(path, full_path);
+
+            int pid = sched_spawn(full_path, argv, 0);
+            if (pid < 0) return -1;
+
+            // Minimal exec semantics for now: launch new image, then terminate caller.
+            sched_exit(0);
+            __builtin_unreachable();
+            return 0;
         }
 
         case SYS_WAITPID: {
@@ -578,7 +587,9 @@ uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
 
             out->type = INPUT_EVENT_KEYBOARD;
             out->key = ev.key;
-            out->modifiers = ev.modifiers;
+            // Keyboard events carry queued modifier snapshot; combine with
+            // live state so modifiers like SUPER remain reliable in userland.
+            out->modifiers = (uint8_t)(ev.modifiers | keyboard_get_modifiers());
             out->pressed = ev.pressed;
             out->scancode = ev.scancode;
             out->mouse_buttons = mouse_get_buttons();
