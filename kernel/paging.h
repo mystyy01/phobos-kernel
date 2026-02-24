@@ -21,7 +21,7 @@
 // User virtual address layout (above identity-mapped kernel region)
 #define USER_VADDR_BASE   0x40000000ULL  // 1 GB - user code starts here
 #define USER_STACK_TOP    0x70000000ULL  // user stack top (grows down)
-#define USER_STACK_SIZE   (16 * 1024)    // 16 KB
+#define USER_STACK_SIZE   (64 * 1024)    // 64 KB
 
 // Initialize paging with user-accessible memory for the bootstrap kernel
 void paging_init(void);

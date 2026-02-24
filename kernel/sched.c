@@ -8,6 +8,7 @@
 #include "syscall.h"
 #include "drivers/framebuffer.h"
 #include "drivers/virtio_gpu.h"
+#include "window.h"
 
 #define MAX_TASKS 16
 #define MAX_PIPES 16
@@ -321,6 +322,9 @@ void sched_exit(int code) {
 
     current->exit_code = code;
     current->state = TASK_STATE_ZOMBIE;
+
+    // Free any windows owned by this process
+    window_cleanup_pid((int)current->id);
 
     // Wake parent if it's waiting for us
     for (int i = 0; i < MAX_TASKS; i++) {

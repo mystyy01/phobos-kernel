@@ -35,7 +35,8 @@ KERNEL_C_SRCS := \
 	$(KERNEL_DIR)/sched.c \
 	$(KERNEL_DIR)/tty.c \
 	$(KERNEL_DIR)/font.c \
-	$(KERNEL_DIR)/console.c
+	$(KERNEL_DIR)/console.c \
+	$(KERNEL_DIR)/window.c
 
 KERNEL_C_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(KERNEL_C_SRCS))
 ENTRY_ASM_OBJ := $(BUILD_DIR)/kernel/entry_asm.o

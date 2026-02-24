@@ -17,6 +17,7 @@
 #include "syscall.h"
 #include "tty.h"
 #include "console.h"
+#include "window.h"
 
 #define START_USER_TASK 0
 #define START_SCHEDULER 1
@@ -74,6 +75,7 @@ void kernel_main(void) {
     for (uint64_t addr = map_start; addr < map_end; addr += 0x1000){
         paging_map_kernel_page(paging_kernel_pml4(), addr, addr, PAGE_PRESENT | PAGE_WRITABLE);
     }
+    window_init();
     console_init();
     // Allow user tasks to write to VGA for now
     paging_mark_user_region(0xB8000, 0x1000);

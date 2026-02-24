@@ -50,6 +50,15 @@
 #define SYS_FB_PRESENT 34 // fb_present(void *buf) -> 0
 #define SYS_FB_PRESENT_RECT 35 // fb_present_rect(void *buf, int x, int y, int w, int h) -> 0
 
+// Window management syscalls
+#define SYS_WIN_CREATE  36 // win_create(flags, w, h) -> handle (0-15) or -1
+#define SYS_WIN_PRESENT 37 // win_present(handle, x, y, w, h) -> 0 or -1
+#define SYS_WIN_CLOSE   38 // win_close(handle) -> 0 or -1
+#define SYS_WIN_POLL    39 // win_poll(handle, &event) -> 1 or 0
+#define SYS_WIN_INFO    40 // win_info(slot, &info) -> 1 or 0
+#define SYS_WIN_MAP     41 // win_map(handle) -> vaddr or 0
+#define SYS_WIN_SEND    42 // win_send(handle, &event) -> 1 or 0
+
 // signal numbers
 #define SIGKILL     9
 #define SIGTERM     15

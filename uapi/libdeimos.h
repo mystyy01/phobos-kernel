@@ -23,6 +23,7 @@ typedef struct dm_app {
     int bpp;
     int pitch;
     int stride_pixels;
+    int win_handle;   // -1 = legacy fullscreen, 0..15 = windowed
 } dm_app;
 
 typedef struct dm_event {
@@ -72,6 +73,7 @@ static inline int dm_init(dm_app *app) {
     app->bpp = (int)info.bpp;
     app->pitch = (int)info.pitch;
     app->stride_pixels = (int)(info.pitch / 4);
+    app->win_handle = -1;
     return 0;
 }
 
@@ -273,6 +275,58 @@ static inline int dm_text_width(const char *text) {
     if (!text) return 0;
     while (text[w] && text[w] != '\n') w++;
     return w * 6;
+}
+
+// ============================================================================
+// Windowed API (kernel-managed window buffers)
+// ============================================================================
+
+static inline int dm_window_create(dm_app *app, int flags, int w, int h) {
+    if (!app) return -1;
+    int handle = win_create(flags, w, h);
+    if (handle < 0) return -1;
+
+    // Buffer is mapped at 0x60000000 + handle * 4MB by the kernel
+    uint64_t vaddr = 0x60000000ULL + (uint64_t)handle * 0x400000ULL;
+    app->pixels = (uint32_t *)(uintptr_t)vaddr;
+    app->width = w;
+    app->height = h;
+    app->bpp = 32;
+    app->pitch = w * 4;
+    app->stride_pixels = w;
+    app->win_handle = handle;
+    return handle;
+}
+
+static inline int dm_window_present(dm_app *app, int x, int y, int w, int h) {
+    if (!app || app->win_handle < 0) return -1;
+    return win_present(app->win_handle, x, y, w, h);
+}
+
+static inline int dm_window_close(dm_app *app) {
+    if (!app || app->win_handle < 0) return -1;
+    int r = win_close(app->win_handle);
+    app->win_handle = -1;
+    app->pixels = 0;
+    return r;
+}
+
+static inline int dm_window_poll_event(dm_app *app, dm_event *out) {
+    struct user_input_event raw;
+    if (!app || !out || app->win_handle < 0) return 0;
+
+    int r = win_poll(app->win_handle, &raw);
+    if (r <= 0) return r;
+
+    out->type = raw.type;
+    out->key = raw.key;
+    out->modifiers = raw.modifiers;
+    out->pressed = raw.pressed;
+    out->scancode = raw.scancode;
+    out->mouse_buttons = raw.mouse_buttons;
+    out->mouse_x = raw.mouse_x;
+    out->mouse_y = raw.mouse_y;
+    return 1;
 }
 
 #endif // LIBDEIMOS_H

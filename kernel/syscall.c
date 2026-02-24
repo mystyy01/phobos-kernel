@@ -11,6 +11,7 @@
 #include "drivers/framebuffer.h"
 #include "drivers/keyboard.h"
 #include "drivers/mouse.h"
+#include "window.h"
 
 extern void sched_deliver_signals(struct task *t);
 
@@ -659,6 +660,67 @@ uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
             if (!src) return -1;
             fb_present_buffer_rect(src, x, y, w, h);
             return 0;
+        }
+
+        // =========================================================================
+        // Window management syscalls
+        // =========================================================================
+
+        case SYS_WIN_CREATE: {
+            int flags = (int)arg1;
+            int w = (int)arg2;
+            int h = (int)arg3;
+            struct task *t = sched_current();
+            if (!t) return -1;
+            return (uint64_t)window_create((int)t->id, t->cr3, flags, w, h);
+        }
+
+        case SYS_WIN_PRESENT: {
+            int handle = (int)arg1;
+            int x = (int)arg2;
+            int y = (int)arg3;
+            int w = (int)arg4;
+            int h = (int)arg5;
+            struct task *t = sched_current();
+            if (!t) return -1;
+            return (uint64_t)window_present(handle, (int)t->id, x, y, w, h);
+        }
+
+        case SYS_WIN_CLOSE: {
+            int handle = (int)arg1;
+            struct task *t = sched_current();
+            if (!t) return -1;
+            return (uint64_t)window_close(handle, (int)t->id);
+        }
+
+        case SYS_WIN_POLL: {
+            int handle = (int)arg1;
+            struct user_input_event *out = (struct user_input_event *)arg2;
+            if (!out) return 0;
+            struct task *t = sched_current();
+            if (!t) return 0;
+            return (uint64_t)window_poll_event(handle, (int)t->id, out);
+        }
+
+        case SYS_WIN_INFO: {
+            int slot = (int)arg1;
+            struct user_win_info *out = (struct user_win_info *)arg2;
+            if (!out) return 0;
+            return (uint64_t)window_get_info(slot, out);
+        }
+
+        case SYS_WIN_MAP: {
+            int handle = (int)arg1;
+            struct task *t = sched_current();
+            if (!t) return 0;
+            return window_map_for_compositor(handle, t->cr3);
+        }
+
+        case SYS_WIN_SEND: {
+            int handle = (int)arg1;
+            const struct user_input_event *ev = (const struct user_input_event *)arg2;
+            if (!ev) return 0;
+            return (uint64_t)window_send_event(handle, ev);
         }
 
         default:

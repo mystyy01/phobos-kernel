@@ -45,6 +45,15 @@
 #define SYS_FB_PRESENT 34 // fb_present(void *buf) -> 0
 #define SYS_FB_PRESENT_RECT 35 // fb_present_rect(void *buf, int x, int y, int w, int h) -> 0
 
+// Window management syscalls
+#define SYS_WIN_CREATE  36 // win_create(flags, w, h) -> handle (0-15) or -1
+#define SYS_WIN_PRESENT 37 // win_present(handle, x, y, w, h) -> 0 or -1
+#define SYS_WIN_CLOSE   38 // win_close(handle) -> 0 or -1
+#define SYS_WIN_POLL    39 // win_poll(handle, &event) -> 1 or 0
+#define SYS_WIN_INFO    40 // win_info(slot, &info) -> 1 or 0
+#define SYS_WIN_MAP     41 // win_map(handle) -> vaddr or 0
+#define SYS_WIN_SEND    42 // win_send(handle, &event) -> 1 or 0
+
 // signal numbers
 #define SIGKILL     9
 #define SIGTERM     15
@@ -362,6 +371,46 @@ static inline int fb_present(void *buf) {
 
 static inline int fb_present_rect(void *buf, int x, int y, int w, int h) {
     return (int)syscall5(SYS_FB_PRESENT_RECT, (long)buf, x, y, w, h);
+}
+
+// ============================================================================
+// Window management
+// ============================================================================
+
+struct user_win_info {
+    int active;
+    int owner_pid;
+    int width;
+    int height;
+    int dirty;
+};
+
+static inline int win_create(int flags, int w, int h) {
+    return (int)syscall3(SYS_WIN_CREATE, flags, w, h);
+}
+
+static inline int win_present(int handle, int x, int y, int w, int h) {
+    return (int)syscall5(SYS_WIN_PRESENT, handle, x, y, w, h);
+}
+
+static inline int win_close(int handle) {
+    return (int)syscall1(SYS_WIN_CLOSE, handle);
+}
+
+static inline int win_poll(int handle, struct user_input_event *out) {
+    return (int)syscall2(SYS_WIN_POLL, handle, (long)out);
+}
+
+static inline int win_info(int slot, struct user_win_info *out) {
+    return (int)syscall2(SYS_WIN_INFO, slot, (long)out);
+}
+
+static inline long win_map(int handle) {
+    return syscall1(SYS_WIN_MAP, handle);
+}
+
+static inline int win_send(int handle, const struct user_input_event *ev) {
+    return (int)syscall2(SYS_WIN_SEND, handle, (long)ev);
 }
 
 #endif // LIBSYS_H
