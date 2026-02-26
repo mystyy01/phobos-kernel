@@ -4,10 +4,54 @@
 
 static struct win_entry windows[MAX_WINDOWS];
 
+static void window_release_slot(int slot) {
+    if (slot < 0 || slot >= MAX_WINDOWS) return;
+
+    struct win_entry *win = &windows[slot];
+    uint64_t owner_vaddr = WIN_APP_VA_BASE + (uint64_t)slot * WIN_SLOT_SIZE;
+
+    for (int i = 0; i < win->page_count; i++) {
+        uint64_t pa = 0;
+        int unmapped = 0;
+
+        if (win->owner_cr3) {
+            if (paging_unmap_page((uint64_t *)win->owner_cr3,
+                                  owner_vaddr + (uint64_t)i * 0x1000,
+                                  &pa) == 0) {
+                unmapped = 1;
+            }
+        }
+
+        if (unmapped && pa) {
+            pmm_free_page((void *)pa);
+        } else if (win->phys_pages[i]) {
+            pmm_free_page((void *)win->phys_pages[i]);
+        }
+        win->phys_pages[i] = 0;
+    }
+
+    win->active = 0;
+    win->owner_pid = 0;
+    win->owner_cr3 = 0;
+    win->width = 0;
+    win->height = 0;
+    win->flags = 0;
+    win->dirty = 0;
+    win->page_count = 0;
+    win->ev_head = 0;
+    win->ev_tail = 0;
+    win->ev_count = 0;
+}
+
 void window_init(void) {
     for (int i = 0; i < MAX_WINDOWS; i++) {
         windows[i].active = 0;
         windows[i].owner_pid = 0;
+        windows[i].owner_cr3 = 0;
+        windows[i].width = 0;
+        windows[i].height = 0;
+        windows[i].flags = 0;
+        windows[i].dirty = 0;
         windows[i].page_count = 0;
         windows[i].ev_head = 0;
         windows[i].ev_tail = 0;
@@ -95,17 +139,7 @@ int window_close(int handle, int pid) {
     struct win_entry *win = &windows[handle];
     if (!win->active || win->owner_pid != pid) return -1;
 
-    // Free physical pages
-    for (int i = 0; i < win->page_count; i++) {
-        pmm_free_page((void *)win->phys_pages[i]);
-    }
-
-    win->active = 0;
-    win->owner_pid = 0;
-    win->page_count = 0;
-    win->ev_head = 0;
-    win->ev_tail = 0;
-    win->ev_count = 0;
+    window_release_slot(handle);
     return 0;
 }
 
@@ -146,10 +180,10 @@ uint64_t window_map_for_compositor(int handle, uint64_t compositor_cr3) {
 
     // Map same physical pages read-only into compositor's address space
     for (int i = 0; i < win->page_count; i++) {
-        if (paging_map_user_page((uint64_t *)compositor_cr3,
-                                  vaddr + (uint64_t)i * 0x1000,
-                                  win->phys_pages[i],
-                                  PAGE_PRESENT | PAGE_USER) < 0) {
+        if (paging_map_user_shared_page((uint64_t *)compositor_cr3,
+                                        vaddr + (uint64_t)i * 0x1000,
+                                        win->phys_pages[i],
+                                        PAGE_PRESENT | PAGE_USER) < 0) {
             return 0;
         }
     }
@@ -177,15 +211,7 @@ int window_send_event(int handle, const struct user_input_event *ev) {
 void window_cleanup_pid(int pid) {
     for (int i = 0; i < MAX_WINDOWS; i++) {
         if (windows[i].active && windows[i].owner_pid == pid) {
-            for (int j = 0; j < windows[i].page_count; j++) {
-                pmm_free_page((void *)windows[i].phys_pages[j]);
-            }
-            windows[i].active = 0;
-            windows[i].owner_pid = 0;
-            windows[i].page_count = 0;
-            windows[i].ev_head = 0;
-            windows[i].ev_tail = 0;
-            windows[i].ev_count = 0;
+            window_release_slot(i);
         }
     }
 }

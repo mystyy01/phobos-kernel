@@ -13,9 +13,12 @@
 #define MAX_TASKS 16
 #define MAX_PIPES 16
 #define KSTACK_SIZE (16 * 1024)
-#define USTACK_SIZE (16 * 1024)
 #define KSTACK_PAGES (KSTACK_SIZE / 4096)
-#define USTACK_PAGES (USTACK_SIZE / 4096)
+#define USTACK_PAGES (USER_STACK_SIZE / 4096)
+
+#if (USER_STACK_SIZE % 4096) != 0
+#error "USER_STACK_SIZE must be 4KiB-aligned"
+#endif
 
 static struct task tasks[MAX_TASKS];
 static struct task *runq = 0;
@@ -40,6 +43,16 @@ extern uint64_t user_ctx_r13;
 extern uint64_t user_ctx_r14;
 extern uint64_t user_ctx_r15;
 
+static inline uint64_t irq_save_disable(void) {
+    uint64_t rflags;
+    __asm__ volatile ("pushfq; pop %0; cli" : "=r"(rflags) : : "memory");
+    return rflags;
+}
+
+static inline void irq_restore(uint64_t rflags) {
+    __asm__ volatile ("push %0; popfq" : : "r"(rflags) : "memory", "cc");
+}
+
 static void mem_zero(void *dst, uint64_t n) {
     uint8_t *d = (uint8_t *)dst;
     while (n--) *d++ = 0;
@@ -53,20 +66,13 @@ static void mem_copy(void *dst, const void *src, uint64_t n) {
 
 // Allocate contiguous pages for a stack from PMM
 static uint8_t *alloc_stack(int num_pages) {
-    uint8_t *base = (uint8_t *)pmm_alloc_page();
-    if (!base) return 0;
-    for (int i = 1; i < num_pages; i++) {
-        uint8_t *page = (uint8_t *)pmm_alloc_page();
-        if (!page) return 0;
-    }
-    return base;
+    if (num_pages <= 0) return 0;
+    return (uint8_t *)pmm_alloc_pages((uint64_t)num_pages);
 }
 
 static void free_stack(uint8_t *base, int num_pages) {
-    if (!base) return;
-    for (int i = 0; i < num_pages; i++) {
-        pmm_free_page(base + i * 4096);
-    }
+    if (!base || num_pages <= 0) return;
+    pmm_free_pages(base, (uint64_t)num_pages);
 }
 
 void sched_init(void) {
@@ -130,8 +136,9 @@ void sched_deliver_signals(struct task *t) {
                 // to avoid halting in the middle of signal delivery
                 t->state = TASK_STATE_ZOMBIE;
                 t->exit_code = -1;
+                window_cleanup_pid((int)t->id);
                 // Wake parent
-                for (int j = 0; j < 16; j++) {
+                for (int j = 0; j < MAX_TASKS; j++) {
                     if (tasks[j].state == TASK_STATE_WAITING &&
                         tasks[j].waiting_for == (int)t->id) {
                         tasks[j].state = TASK_STATE_RUNNABLE;
@@ -168,6 +175,38 @@ void sched_signal_pgid(int pgid, int sig) {
 }
 static int task_index(struct task *t) {
     return (int)(t - tasks);
+}
+
+static struct task *pick_next_runnable(struct task *from) {
+    if (!from) return 0;
+
+    struct task *scan = from;
+    struct task *idle = 0;
+    do {
+        scan = scan->next;
+        if (!scan || scan->state != TASK_STATE_RUNNABLE) continue;
+        if (!scan->is_idle) return scan;
+        if (!idle) idle = scan;
+    } while (scan && scan != from);
+
+    return idle;
+}
+
+static int activate_task_context(struct task *t) {
+    if (!t || t->rsp == 0) return 0;
+
+    // Update per-task kernel stack for TSS and syscall entry
+    if (t->kernel_stack_top) {
+        tss_set_rsp0(t->kernel_stack_top);
+        current_kernel_rsp = t->kernel_stack_top;
+    }
+
+    // Switch address space
+    if (t->cr3) {
+        __asm__ volatile ("mov %0, %%cr3" : : "r"(t->cr3) : "memory");
+    }
+
+    return 1;
 }
 
 static void enqueue(struct task *t) {
@@ -267,38 +306,22 @@ struct irq_frame *sched_tick(struct irq_frame *frame) {
     if (!sched_running) return frame;
 
     current->rsp = (uint64_t)frame;
-
-    struct task *start = current;
-    struct task *idle = 0;
-    do {
-        current = current->next;
-        if (!current || current->state != TASK_STATE_RUNNABLE) continue;
-        if (!current->is_idle) break;
-        if (!idle) idle = current;
-    } while (current && current != start);
-
-    if (!current || current->state != TASK_STATE_RUNNABLE) {
-        if (idle) {
-            current = idle;
-        } else {
-            return frame;
-        }
-    }
-    if (current->rsp == 0) return frame;
-
-    // Update per-task kernel stack for TSS and syscall entry
-    if (current->kernel_stack_top) {
-        tss_set_rsp0(current->kernel_stack_top);
-        current_kernel_rsp = current->kernel_stack_top;
-    }
-
-    // Switch address space
-    if (current->cr3) {
-        __asm__ volatile ("mov %0, %%cr3" : : "r"(current->cr3) : "memory");
-    }
+    struct task *next = pick_next_runnable(current);
+    if (!next) return frame;
+    current = next;
+    if (!activate_task_context(current)) return frame;
 
     sched_deliver_signals(current);
-    
+
+    // A delivered signal may have transitioned this task away from RUNNABLE.
+    // Never iretq back into a task we just marked ZOMBIE.
+    if (current->state != TASK_STATE_RUNNABLE) {
+        struct task *after_signal = pick_next_runnable(current);
+        if (!after_signal) return frame;
+        current = after_signal;
+        if (!activate_task_context(current)) return frame;
+    }
+
     return (struct irq_frame *)current->rsp;
 }
 
@@ -614,6 +637,20 @@ int sched_fork(void) {
     struct task *parent = current;
     if (!parent || !parent->is_user) return -1;
 
+    // Snapshot SYSCALL user context atomically. The user_ctx_* globals are
+    // shared across tasks, so preemption here can otherwise corrupt child init.
+    uint64_t irq_flags = irq_save_disable();
+    uint64_t saved_rsp    = user_ctx_rsp;
+    uint64_t saved_rip    = user_ctx_rip;
+    uint64_t saved_rflags = user_ctx_rflags;
+    uint64_t saved_rbx    = user_ctx_rbx;
+    uint64_t saved_rbp    = user_ctx_rbp;
+    uint64_t saved_r12    = user_ctx_r12;
+    uint64_t saved_r13    = user_ctx_r13;
+    uint64_t saved_r14    = user_ctx_r14;
+    uint64_t saved_r15    = user_ctx_r15;
+    irq_restore(irq_flags);
+
     struct task *child = alloc_task();
     if (!child) return -1;
 
@@ -647,17 +684,17 @@ int sched_fork(void) {
         (child->kernel_stack_top - sizeof(struct irq_frame_user));
     mem_zero(frame, sizeof(*frame));
 
-    frame->base.rip    = user_ctx_rip;       // resume at instruction after SYSCALL
+    frame->base.rip    = saved_rip;          // resume at instruction after SYSCALL
     frame->base.cs     = 0x23;               // user code segment
-    frame->base.rflags = user_ctx_rflags;    // original flags
+    frame->base.rflags = saved_rflags;       // original flags
     frame->base.rax    = 0;                  // fork() returns 0 in child
-    frame->base.rbx    = user_ctx_rbx;
-    frame->base.rbp    = user_ctx_rbp;
-    frame->base.r12    = user_ctx_r12;
-    frame->base.r13    = user_ctx_r13;
-    frame->base.r14    = user_ctx_r14;
-    frame->base.r15    = user_ctx_r15;
-    frame->rsp         = user_ctx_rsp;       // same user stack (copied via page clone)
+    frame->base.rbx    = saved_rbx;
+    frame->base.rbp    = saved_rbp;
+    frame->base.r12    = saved_r12;
+    frame->base.r13    = saved_r13;
+    frame->base.r14    = saved_r14;
+    frame->base.r15    = saved_r15;
+    frame->rsp         = saved_rsp;          // same user stack (copied via page clone)
     frame->ss          = 0x1B;               // user data segment
 
     child->rsp = (uint64_t)frame;

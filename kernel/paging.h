@@ -42,11 +42,15 @@ int paging_map_page(uint64_t *pml4, uint64_t addr, uint64_t flags);
 // Map vaddr → paddr in the given page table. Creates intermediate entries
 // as needed. Sets PAGE_USERALLOC on the leaf entry for cleanup tracking.
 int paging_map_user_page(uint64_t *pml4, uint64_t vaddr, uint64_t paddr, uint64_t flags);
+// Map a user page without PAGE_USERALLOC tracking (for shared mappings).
+int paging_map_user_shared_page(uint64_t *pml4, uint64_t vaddr, uint64_t paddr, uint64_t flags);
 // maps a new kernel page
 int paging_map_kernel_page(uint64_t *target_pml4, uint64_t vaddr, uint64_t paddr, uint64_t flags);
 // Translate virtual address to physical address using given page tables.
 // Returns physical address or 0 if not mapped.
 uint64_t paging_virt_to_phys(uint64_t *pml4, uint64_t vaddr);
+// Unmap one 4 KiB page. Optionally returns the prior physical address.
+int paging_unmap_page(uint64_t *pml4, uint64_t vaddr, uint64_t *paddr_out);
 
 // Free all user-allocated pages (PAGE_USERALLOC) and the page table structure.
 // Does NOT free identity-mapped kernel pages.

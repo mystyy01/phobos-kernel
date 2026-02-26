@@ -128,18 +128,16 @@ static int elf_loader_initialized = 0;
 static int elf_loader_init(void) {
     if (elf_loader_initialized) return 0;
 
-    // Allocate file buffer (512KB = 128 pages)
-    elf_file_buf = (uint8_t *)pmm_alloc_page();
+    // Allocate file buffer (512KB = 128 contiguous pages)
+    elf_file_buf = (uint8_t *)pmm_alloc_pages(ELF_FILE_PAGES);
     if (!elf_file_buf) return -1;
-    for (int i = 1; i < ELF_FILE_PAGES; i++) {
-        if (!pmm_alloc_page()) return -1;  // Contiguous allocation
-    }
 
-    // Allocate stack (16KB = 4 pages)
-    elf_stack = (uint8_t *)pmm_alloc_page();
-    if (!elf_stack) return -1;
-    for (int i = 1; i < ELF_STACK_PAGES; i++) {
-        if (!pmm_alloc_page()) return -1;
+    // Allocate stack (16KB = 4 contiguous pages)
+    elf_stack = (uint8_t *)pmm_alloc_pages(ELF_STACK_PAGES);
+    if (!elf_stack) {
+        pmm_free_pages(elf_file_buf, ELF_FILE_PAGES);
+        elf_file_buf = 0;
+        return -1;
     }
 
     elf_loader_initialized = 1;

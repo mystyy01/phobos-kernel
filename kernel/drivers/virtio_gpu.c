@@ -394,21 +394,12 @@ static int virtio_pci_find_modern_caps(const struct pci_device *dev) {
 
 static uint8_t *alloc_contiguous_pages(int pages) {
     if (pages <= 0) return 0;
-    uint8_t *first = (uint8_t *)pmm_alloc_page();
+    uint8_t *first = (uint8_t *)pmm_alloc_pages((uint64_t)pages);
     if (!first) return 0;
-    if (paging_map_kernel_page(paging_kernel_pml4(), (uint64_t)(uintptr_t)first,
-                               (uint64_t)(uintptr_t)first, PAGE_PRESENT | PAGE_WRITABLE) < 0) {
-        return 0;
-    }
-
-    for (int i = 1; i < pages; i++) {
-        uint8_t *next = (uint8_t *)pmm_alloc_page();
-        if (!next) return 0;
-        if (paging_map_kernel_page(paging_kernel_pml4(), (uint64_t)(uintptr_t)next,
-                                   (uint64_t)(uintptr_t)next, PAGE_PRESENT | PAGE_WRITABLE) < 0) {
-            return 0;
-        }
-        if (next != first + (i * 4096)) {
+    for (int i = 0; i < pages; i++) {
+        uint8_t *page = first + (i * 4096);
+        if (paging_map_kernel_page(paging_kernel_pml4(), (uint64_t)(uintptr_t)page,
+                                   (uint64_t)(uintptr_t)page, PAGE_PRESENT | PAGE_WRITABLE) < 0) {
             return 0;
         }
     }

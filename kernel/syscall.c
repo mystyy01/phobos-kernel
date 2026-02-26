@@ -489,6 +489,7 @@ uint64_t syscall_handler(uint64_t num, uint64_t arg1, uint64_t arg2,
             if (sig == SIGKILL){
                 task->state = TASK_STATE_ZOMBIE;
                 task->exit_code = -1;
+                window_cleanup_pid(pid);
                 sched_wake_waiters(pid);
                 return 0;
             }

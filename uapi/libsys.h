@@ -152,65 +152,70 @@ static inline long syscall0(long num) {
         "syscall"
         : "=a"(result)
         : "a"(num)
-        : "rcx", "r11", "memory"
+        : "rcx", "r11", "rdi", "rsi", "rdx", "r8", "r9", "r10", "memory"
     );
     return result;
 }
 
 static inline long syscall1(long num, long arg1) {
     long result;
+    long _rdi = arg1;
     __asm__ volatile (
         "syscall"
-        : "=a"(result)
-        : "a"(num), "D"(arg1)
-        : "rcx", "r11", "memory"
+        : "=a"(result), "+D"(_rdi)
+        : "a"(num)
+        : "rcx", "r11", "rsi", "rdx", "r8", "r9", "r10", "memory"
     );
     return result;
 }
 
 static inline long syscall2(long num, long arg1, long arg2) {
     long result;
+    long _rdi = arg1, _rsi = arg2;
     __asm__ volatile (
         "syscall"
-        : "=a"(result)
-        : "a"(num), "D"(arg1), "S"(arg2)
-        : "rcx", "r11", "memory"
+        : "=a"(result), "+D"(_rdi), "+S"(_rsi)
+        : "a"(num)
+        : "rcx", "r11", "rdx", "r8", "r9", "r10", "memory"
     );
     return result;
 }
 
 static inline long syscall3(long num, long arg1, long arg2, long arg3) {
     long result;
+    long _rdi = arg1, _rsi = arg2, _rdx = arg3;
     __asm__ volatile (
         "syscall"
-        : "=a"(result)
-        : "a"(num), "D"(arg1), "S"(arg2), "d"(arg3)
-        : "rcx", "r11", "memory"
+        : "=a"(result), "+D"(_rdi), "+S"(_rsi), "+d"(_rdx)
+        : "a"(num)
+        : "rcx", "r11", "r8", "r9", "r10", "memory"
     );
     return result;
 }
 
 static inline long syscall4(long num, long arg1, long arg2, long arg3, long arg4) {
     long result;
+    long _rdi = arg1, _rsi = arg2, _rdx = arg3;
     register long r10 __asm__("r10") = arg4;
     __asm__ volatile (
         "syscall"
-        : "=a"(result)
-        : "a"(num), "D"(arg1), "S"(arg2), "d"(arg3), "r"(r10)
-        : "rcx", "r11", "memory"
+        : "=a"(result), "+D"(_rdi), "+S"(_rsi), "+d"(_rdx), "+r"(r10)
+        : "a"(num)
+        : "rcx", "r11", "r8", "r9", "memory"
     );
     return result;
 }
 
 static inline long syscall5(long num, long arg1, long arg2, long arg3, long arg4, long arg5) {
     long result;
+    long _rdi = arg1, _rsi = arg2, _rdx = arg3;
     register long r10 __asm__("r10") = arg4;
     register long r8 __asm__("r8") = arg5;
     __asm__ volatile (
         "syscall"
-        : "=a"(result)
-        : "a"(num), "D"(arg1), "S"(arg2), "d"(arg3), "r"(r10), "r"(r8)
-        : "rcx", "r11", "memory"
+        : "=a"(result), "+D"(_rdi), "+S"(_rsi), "+d"(_rdx), "+r"(r10), "+r"(r8)
+        : "a"(num)
+        : "rcx", "r11", "r9", "memory"
     );
     return result;
 }

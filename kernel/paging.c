@@ -186,7 +186,11 @@ static void memset_pg(void *dst, int val, uint64_t n) {
     while (n--) *d++ = (uint8_t)val;
 }
 
-int paging_map_user_page(uint64_t *target_pml4, uint64_t vaddr, uint64_t paddr, uint64_t flags) {
+static int paging_map_user_page_internal(uint64_t *target_pml4,
+                                         uint64_t vaddr,
+                                         uint64_t paddr,
+                                         uint64_t flags,
+                                         int track_useralloc) {
     uint64_t pml4_idx = (vaddr >> 39) & 0x1FF;
     uint64_t pdpt_idx = (vaddr >> 30) & 0x1FF;
     uint64_t pd_idx   = (vaddr >> 21) & 0x1FF;
@@ -201,6 +205,9 @@ int paging_map_user_page(uint64_t *target_pml4, uint64_t vaddr, uint64_t paddr, 
         if (!pdpt_l) return -1;
         target_pml4[pml4_idx] = (uint64_t)pdpt_l | hier;
     } else {
+        // If this hierarchy entry was created by a kernel mapping first,
+        // promote it so user leaf mappings below it are reachable.
+        target_pml4[pml4_idx] |= hier;
         pdpt_l = (uint64_t *)(target_pml4[pml4_idx] & ~0xFFFULL);
     }
 
@@ -211,6 +218,7 @@ int paging_map_user_page(uint64_t *target_pml4, uint64_t vaddr, uint64_t paddr, 
         if (!pd_l) return -1;
         pdpt_l[pdpt_idx] = (uint64_t)pd_l | hier;
     } else {
+        pdpt_l[pdpt_idx] |= hier;
         pd_l = (uint64_t *)(pdpt_l[pdpt_idx] & ~0xFFFULL);
     }
 
@@ -221,13 +229,26 @@ int paging_map_user_page(uint64_t *target_pml4, uint64_t vaddr, uint64_t paddr, 
         if (!pt_l) return -1;
         pd_l[pd_idx] = (uint64_t)pt_l | hier;
     } else {
+        pd_l[pd_idx] |= hier;
         pt_l = (uint64_t *)(pd_l[pd_idx] & ~0xFFFULL);
     }
 
-    // Map the page, marking it as user-allocated for later cleanup
-    pt_l[pt_idx] = (paddr & ~0xFFFULL) | flags | PAGE_PRESENT | PAGE_USERALLOC;
+    // Map the leaf entry; shared mappings can opt out of PAGE_USERALLOC.
+    uint64_t leaf_flags = flags & 0xFFFULL;
+    leaf_flags |= PAGE_PRESENT | PAGE_USER;
+    if (track_useralloc) leaf_flags |= PAGE_USERALLOC;
+    uint64_t leaf = (paddr & ~0xFFFULL) | leaf_flags;
+    pt_l[pt_idx] = leaf;
     invlpg(vaddr);
     return 0;
+}
+
+int paging_map_user_page(uint64_t *target_pml4, uint64_t vaddr, uint64_t paddr, uint64_t flags) {
+    return paging_map_user_page_internal(target_pml4, vaddr, paddr, flags, 1);
+}
+
+int paging_map_user_shared_page(uint64_t *target_pml4, uint64_t vaddr, uint64_t paddr, uint64_t flags) {
+    return paging_map_user_page_internal(target_pml4, vaddr, paddr, flags, 0);
 }
 int paging_map_kernel_page(uint64_t *target_pml4, uint64_t vaddr, uint64_t paddr, uint64_t flags) {
     uint64_t pml4_idx = (vaddr >> 39) & 0x1FF;
@@ -290,6 +311,30 @@ uint64_t paging_virt_to_phys(uint64_t *target_pml4, uint64_t vaddr) {
     if (!(pt_l[pt_idx] & PAGE_PRESENT)) return 0;
 
     return (pt_l[pt_idx] & ~0xFFFULL) | (vaddr & 0xFFF);
+}
+
+int paging_unmap_page(uint64_t *target_pml4, uint64_t vaddr, uint64_t *paddr_out) {
+    uint64_t pml4_idx = (vaddr >> 39) & 0x1FF;
+    if (!(target_pml4[pml4_idx] & PAGE_PRESENT)) return -1;
+    uint64_t *pdpt_l = (uint64_t *)(target_pml4[pml4_idx] & ~0xFFFULL);
+
+    uint64_t pdpt_idx = (vaddr >> 30) & 0x1FF;
+    if (!(pdpt_l[pdpt_idx] & PAGE_PRESENT)) return -1;
+    uint64_t *pd_l = (uint64_t *)(pdpt_l[pdpt_idx] & ~0xFFFULL);
+
+    uint64_t pd_idx = (vaddr >> 21) & 0x1FF;
+    if (!(pd_l[pd_idx] & PAGE_PRESENT)) return -1;
+    uint64_t *pt_l = (uint64_t *)(pd_l[pd_idx] & ~0xFFFULL);
+
+    uint64_t pt_idx = (vaddr >> 12) & 0x1FF;
+    if (!(pt_l[pt_idx] & PAGE_PRESENT)) return -1;
+
+    if (paddr_out) {
+        *paddr_out = pt_l[pt_idx] & ~0xFFFULL;
+    }
+    pt_l[pt_idx] = 0;
+    invlpg(vaddr);
+    return 0;
 }
 
 void paging_free_user_space(uint64_t *user_pml4) {
@@ -356,7 +401,10 @@ int paging_clone_user_pages(uint64_t *dst_pml4, uint64_t *src_pml4) {
                     if (!(pt_s[l] & PAGE_USERALLOC)) continue;
 
                     uint64_t src_pa = pt_s[l] & ~0xFFFULL;
-                    uint64_t flags  = pt_s[l] & 0xFFFULL;
+                    // Preserve hardware permission bits, but remapping will
+                    // re-apply tracking metadata (PAGE_USERALLOC).
+                    uint64_t flags  = (pt_s[l] & 0xFFFULL) & ~PAGE_USERALLOC;
+                    flags |= PAGE_USER;
 
                     // Reconstruct the virtual address from indices
                     uint64_t vaddr = ((uint64_t)i << 39) | ((uint64_t)j << 30) |

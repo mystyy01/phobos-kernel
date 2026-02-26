@@ -3,6 +3,7 @@
 #include "drivers/mouse.h"
 #include "drivers/uhci.h"
 #include "sched.h"
+#include "paging.h"
 
 // System tick counter (incremented by timer IRQ ~18.2 times/sec by default PIT)
 volatile uint64_t system_ticks = 0;
@@ -42,6 +43,41 @@ static void dbg_hex64(uint64_t v) {
     for (int i = 15; i >= 0; i--) {
         dbg_out((uint8_t)hex[(v >> (i * 4)) & 0xF]);
     }
+}
+
+static void dbg_pt_walk(uint64_t cr3, uint64_t va) {
+    uint64_t pml4_idx = (va >> 39) & 0x1FF;
+    uint64_t pdpt_idx = (va >> 30) & 0x1FF;
+    uint64_t pd_idx   = (va >> 21) & 0x1FF;
+    uint64_t pt_idx   = (va >> 12) & 0x1FF;
+
+    uint64_t *pml4 = (uint64_t *)(cr3 & ~0xFFFULL);
+    if (!pml4) {
+        dbg_str(" walk=no-pml4");
+        return;
+    }
+
+    uint64_t pml4e = pml4[pml4_idx];
+    dbg_str(" pml4e=");
+    dbg_hex64(pml4e);
+    if (!(pml4e & PAGE_PRESENT)) return;
+
+    uint64_t *pdpt = (uint64_t *)(pml4e & ~0xFFFULL);
+    uint64_t pdpte = pdpt[pdpt_idx];
+    dbg_str(" pdpte=");
+    dbg_hex64(pdpte);
+    if (!(pdpte & PAGE_PRESENT)) return;
+
+    uint64_t *pd = (uint64_t *)(pdpte & ~0xFFFULL);
+    uint64_t pde = pd[pd_idx];
+    dbg_str(" pde=");
+    dbg_hex64(pde);
+    if (!(pde & PAGE_PRESENT)) return;
+
+    uint64_t *pt = (uint64_t *)(pde & ~0xFFFULL);
+    uint64_t pte = pt[pt_idx];
+    dbg_str(" pte=");
+    dbg_hex64(pte);
 }
 
 static const char *exception_names[] = {
@@ -91,6 +127,18 @@ void isr_handler(uint64_t int_no, struct irq_frame *frame) {
             __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
             dbg_str(" cr2=");
             dbg_hex64(cr2);
+            dbg_str(" cr3=");
+            dbg_hex64(t->cr3);
+            dbg_str(" ustk_top=");
+            dbg_hex64(t->user_stack_top);
+            dbg_pt_walk(t->cr3, cr2);
+        }
+        if ((frame->cs & 3) == 3) {
+            struct irq_frame_user *uframe = (struct irq_frame_user *)frame;
+            dbg_str(" rsp=");
+            dbg_hex64(uframe->rsp);
+            dbg_str(" ss=");
+            dbg_hex64(uframe->ss);
         }
         dbg_str("\n");
 
